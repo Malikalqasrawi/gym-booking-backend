@@ -1,18 +1,165 @@
-# Gymbooking backend (Java + Spring Boot)
+# Gym Booking API
 
-The REST API for the Gym Booking app. The Flutter app lives in `~/StudioProjects/gym_booking`.
+A REST API for booking personal-training sessions in a gym chain. Members find a trainer at one of 5 branches, request a time, the trainer accepts, and the member pays through Stripe. Everyone gets an email at each step.
 
-**Stage 1 (done):** accounts. Includes sign-up, email verification code, login with a JWT token, and roles (Member / Trainer / Admin).
+[![CI](https://github.com/Malikalqasrawi/gym-booking-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Malikalqasrawi/gym-booking-backend/actions/workflows/ci.yml)
+![Java](https://img.shields.io/badge/Java-21-E76F00?logo=openjdk&logoColor=white)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5-6DB33F?logo=springboot&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-8.4-4479A1?logo=mysql&logoColor=white)
+![Stripe](https://img.shields.io/badge/Stripe-test%20mode-635BFF?logo=stripe&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Stage 2 (done):** MySQL database, branches CRUD API, trainers linked to branches, weekly working hours, and an availability API (free start times for a date + duration). The app shows a branch map → trainers → date/duration/time picker.
-
-**Stage 3 (done):** booking requests. A member sends a request, the trainer accepts or declines it, and the time stays blocked while it waits (24 h max). Prices come from each trainer's hourly rate. Members see "My bookings"; trainers see "Requests" and "Schedule".
-
-**Stage 4 (done):** payments with **Stripe (test mode)**. After the trainer accepts, the member has 12 h to pay in Stripe's payment screen; then the booking is `PAID` and a confirmation email goes out. Paid sessions can be cancelled with a full refund until 24 h before. See section 8 for the Stripe setup.
+**Mobile app for this API:** [gym-booking-app](https://github.com/Malikalqasrawi/gym-booking-app) (Flutter)
 
 ---
 
-## 1. How to run it
+## Why it exists
+
+Booking a personal trainer by phone or chat goes wrong in predictable ways: two people get the same hour, a trainer never answers, a session is booked but never paid, and a late cancellation turns into an argument. This backend makes the rules explicit and enforces them in one place:
+
+- **No double booking.** The trainer's row is locked while a request is checked, so two members tapping the same hour at the same second can't both get it.
+- **Nobody waits forever.** A trainer has 24 h to answer a request; an accepted session must be paid within 12 h. Otherwise the time is released automatically.
+- **Money is handled safely.** Cards go straight from the phone to Stripe, the server double-checks every payment with Stripe, and refunds happen automatically when a paid session is cancelled in time (until 24 h before).
+- **Everyone sees only their own data.** Members see their bookings, trainers see the requests sent to them; anyone else's booking answers `404`.
+
+## Features
+
+| Area | What's included |
+|---|---|
+| Accounts | Sign-up with email verification code, JWT login, roles (member / trainer / admin), login lockout after 5 wrong passwords |
+| Branches & trainers | 5 branches with GPS positions, 22 trainers with profiles, filters (category, gender, max price), weekly schedules |
+| Availability | Free start times for a trainer, date and duration (30/45/60/90 min), respecting working hours, branch hours and existing bookings |
+| Bookings | Request → accept / decline, 24 h answer deadline, max 3 pending requests per member, cancel rules |
+| Payments | Stripe PaymentIntents (test mode), 12 h pay deadline, receipts by email, automatic refunds, signed webhook |
+| Protection | Rate limiting per IP, JSON-only API, owner-scoped queries, optimistic + pessimistic locking, secrets outside the code |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    App["Flutter app"] -->|"HTTPS + JSON<br/>JWT in header"| Filters
+
+    subgraph Backend["Spring Boot backend"]
+        direction LR
+        Filters["RateLimitFilter<br/>JwtAuthenticationFilter"] --> Controllers["Controllers<br/>(REST endpoints)"]
+        Controllers --> Services["Services<br/>(business rules)"]
+        Services --> Repositories["Repositories<br/>(Spring Data JPA)"]
+        Services --> Gateway["PaymentGateway<br/>(interface)"]
+        Services --> Notify["NotificationSender<br/>(console / SMTP)"]
+        Job["BookingExpiryJob<br/>(every minute)"] --> Services
+    end
+
+    Repositories --> DB[("MySQL 8.4")]
+    Gateway -->|"REST"| Stripe["Stripe API"]
+    Stripe -.->|"signed webhook"| Controllers
+    App -.->|"card details<br/>(never via our server)"| Stripe
+```
+
+**Layers:** controllers only translate HTTP ↔ Java, services hold every rule, repositories only talk to the database. Services depend on interfaces (`PaymentGateway`, `NotificationSender`, `RateLimiter`, `TokenService`), so Stripe, email or the rate limiter can be swapped without touching the rules. That's also what makes them easy to replace with fakes in tests.
+
+**How a payment works:**
+
+```mermaid
+sequenceDiagram
+    participant App as Flutter app
+    participant API as Backend
+    participant DB as MySQL
+    participant Stripe
+    participant Mail as Email
+
+    App->>API: POST /api/bookings/{id}/payment
+    API->>DB: lock booking, check it's ACCEPTED and not past its deadline
+    API->>Stripe: create PaymentIntent (20000 fils, Idempotency-Key)
+    Stripe-->>API: id + client_secret
+    API-->>App: client_secret + publishable key
+    App->>Stripe: card typed into Stripe's own payment screen
+    Stripe-->>App: paid
+    App->>API: POST /api/bookings/{id}/payment/confirm
+    API->>Stripe: is this PaymentIntent really paid? (never trust the app)
+    API->>DB: booking PAID, payment SUCCEEDED
+    API-->>App: booking + receipt
+    API-)Mail: confirmation to member and trainer (after the save)
+```
+
+## Tech stack
+
+| | |
+|---|---|
+| Language / runtime | Java 21 |
+| Framework | Spring Boot 3.5 (Web, Data JPA, Security, Validation, Mail) |
+| Database | MySQL 8.4, Hibernate 6 |
+| Auth | JWT (JJWT, HS512), BCrypt password hashes |
+| Payments | Stripe REST API (test mode), called with Spring's `RestClient` |
+| Tests | JUnit 5, H2 in-memory database, fake Stripe server |
+| Delivery | Docker + docker compose, GitHub Actions CI |
+
+## Quick start
+
+### Option A: Docker (one command, nothing else to install except Docker)
+
+```bash
+git clone https://github.com/Malikalqasrawi/gym-booking-backend.git
+cd gym-booking-backend
+cp .env.example .env          # then fill in the values (the file explains each one)
+docker compose up --build
+```
+
+Check it: <http://localhost:8080/api/health> → `{"status":"UP", ...}`. Starter data (5 branches, 22 trainers, an admin) is created automatically; logins are listed in the [developer guide](#1-how-to-run-it).
+
+### Option B: run it from an IDE with your own MySQL
+
+Needs JDK 21+ and MySQL 8.4. The step-by-step setup (database user, `local.properties`, NetBeans) is in [How to run it](#1-how-to-run-it). In short:
+
+```bash
+bash scripts/create-db-user.sh     # creates the MySQL user "gymapp" and saves its password in local.properties
+mvn spring-boot:run
+```
+
+Secrets (database password, JWT secret, Stripe keys) live in `local.properties` or `.env`. Both are git-ignored, and a pre-commit hook (`scripts/git-hooks/pre-commit`) refuses commits that contain keys.
+
+## Tests
+
+```bash
+mvn test
+```
+
+49 tests, and they need no MySQL, internet or Stripe account:
+
+| Test | What it proves |
+|---|---|
+| `BookingTest` | The booking state machine: deadlines, expiry, paying, 24 h cancellation rule |
+| `PaymentTest` | A payment can only go PENDING → SUCCEEDED → REFUNDED |
+| `CurrencyUnitsTest` | JOD has 3 decimals (20.000 JOD = 20000 fils), amounts Stripe can't take are refused |
+| `StripeWebhookVerifierTest` | Only messages signed with our secret and less than 5 min old are accepted |
+| `StripePaymentGatewayTest` | The exact HTTP requests sent to Stripe, idempotency, and Stripe errors / downtime |
+| `InMemoryRateLimiterTest` | 10 requests per minute per visitor, then `429` with a wait time |
+| `GymBookingApiTest` | The whole backend over HTTP: sign-up, roles, private bookings, double booking, the full pay → refund flow, declined cards, webhooks, late payments, Stripe outages |
+
+The Stripe and email parts are replaced by test doubles (`FakeStripe`, `CapturingNotificationSender`), so the tests can simulate declined cards, slow banks and Stripe errors. GitHub Actions runs all tests and a Docker smoke test on every push and pull request.
+
+## Project status
+
+| Stage | Status |
+|---|---|
+| 1. Accounts: sign-up, email verification, JWT login, roles | Done |
+| 2. MySQL, branches, trainers, availability, map | Done |
+| 3. Booking requests, accept / decline, expiry | Done |
+| 4. Stripe payments, refunds, confirmation emails | Done |
+| 5. Admin tools (branches, trainers, slots), 2FA for admins, refresh tokens | Next |
+| 6. Google sign-in | Planned |
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+# Developer guide
+
+The sections below explain how the code works, in detail. They were written while building the project, as a learning reference.
+
+### 1. How to run it
 
 **One-time setup:** install MySQL (see section 2), copy `local.properties.example` to `local.properties` (same folder as `pom.xml`), run `bash scripts/create-db-user.sh` (fills in the database password), and add a JWT secret (the example file shows the command that makes one).
 
@@ -51,7 +198,7 @@ Members create their own accounts in the app.
 
 ---
 
-## 2. Where the data is stored (MySQL)
+### 2. Where the data is stored (MySQL)
 
 The data lives in a **MySQL** server running on your Mac. Java never stores data itself: it describes the tables (`@Entity` classes) and sends SQL through Hibernate.
 
@@ -78,7 +225,7 @@ The data lives in a **MySQL** server running on your Mac. Java never stores data
 
 - **To start fresh:** in Workbench (as root) run `DROP DATABASE gymdb;` then restart the backend. gymapp is allowed to create `gymdb` again, and the seeder refills everything.
 
-## 3. How a request travels through the code
+### 3. How a request travels through the code
 
 Example: the app sends `POST /api/auth/login`.
 
@@ -110,7 +257,7 @@ If anything goes wrong, a service throws, for example, `new UnauthorizedExceptio
 
 ---
 
-## 4. Folder structure (what each package is for)
+### 4. Folder structure (what each package is for)
 
 ```
 com.mycompany.gymbooking
@@ -131,7 +278,7 @@ com.mycompany.gymbooking
 
 ---
 
-## 5. OOP principles: where to find each one
+### 5. OOP principles: where to find each one
 
 | Principle | Where | What it does here |
 |---|---|---|
@@ -148,7 +295,7 @@ com.mycompany.gymbooking
 
 ---
 
-## 6. API endpoints (Stage 1)
+### 6. API endpoints (Stage 1)
 
 | Method | URL | Needs token? | Body | Success |
 |---|---|---|---|---|
@@ -161,7 +308,7 @@ com.mycompany.gymbooking
 
 Error codes the app reacts to: `EMAIL_TAKEN`, `INVALID_CODE`, `CODE_EXPIRED`, `TOO_MANY_ATTEMPTS`, `RESEND_TOO_SOON`, `ALREADY_VERIFIED`, `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED`, `EMAIL_NOT_VERIFIED`, `VALIDATION_FAILED`, `UNAUTHORIZED`, `RATE_LIMITED`.
 
-### Protection against spam and password guessing
+#### Protection against spam and password guessing
 
 | Rule | Limit | Answer when exceeded |
 |---|---|---|
@@ -179,7 +326,7 @@ Limits of this approach: counters live in memory (reset on restart, not shared b
 
 **Verification code rules:** 6 digits, valid for 10 minutes, **5 wrong tries** (`app.verification.max-attempts`). After the 5th wrong try the code is locked, even the right code is refused (`TOO_MANY_ATTEMPTS`), until the user taps "Resend code". A new code resets the count. The counter is the `verification_attempts` column in `users`.
 
-### Branches: a full CRUD API
+#### Branches: a full CRUD API
 
 One address (`/api/branches`); the **HTTP method** decides the action.
 
@@ -209,7 +356,7 @@ Body for POST / PUT:
 
 Branch error codes: `BRANCH_NOT_FOUND` (404), `BRANCH_NAME_TAKEN` (409), `INVALID_HOURS` (400), `VALIDATION_FAILED` (400), `FORBIDDEN` (403, not an admin), `INVALID_PARAMETER` (400, e.g. `/api/branches/abc`).
 
-### Trainers & availability (Stage 2)
+#### Trainers & availability (Stage 2)
 
 | Method | URL | Who | Returns |
 |---|---|---|---|
@@ -226,7 +373,7 @@ How free times are worked out (`AvailabilityServiceImpl`):
 
 Rules: `duration` must be 30, 45, 60 or 90 (`INVALID_DURATION`); `date` must be from today up to 13 days ahead (`DATE_OUT_OF_RANGE`); missing `date` → `MISSING_PARAMETER`; unknown trainer → `TRAINER_NOT_FOUND`.
 
-### Bookings (Stage 3)
+#### Bookings (Stage 3)
 
 | Method | URL | Who | What it does |
 |---|---|---|---|
@@ -256,7 +403,7 @@ Rules: `duration` must be 30, 45, 60 or 90 (`INVALID_DURATION`); `date` must be 
 
 Booking error codes: `SLOT_NOT_AVAILABLE`, `MEMBER_BUSY`, `TOO_MANY_PENDING`, `TRAINER_NOT_BOOKABLE`, `BOOKING_NOT_FOUND`, `BOOKING_NOT_PENDING`, `REQUEST_EXPIRED`, `BOOKING_NOT_CANCELLABLE`, `SESSION_STARTED`, `TOO_LATE_TO_CANCEL`, `BOOKING_CHANGED`.
 
-### Payments (Stage 4)
+#### Payments (Stage 4)
 
 | Method | URL | Who | What |
 |---|---|---|---|
@@ -279,7 +426,7 @@ Booking error codes: `SLOT_NOT_AVAILABLE`, `MEMBER_BUSY`, `TOO_MANY_PENDING`, `T
 
 Payment error codes: `NOT_ACCEPTED_YET`, `ALREADY_PAID`, `BOOKING_EXPIRED`, `PAYMENT_NOT_STARTED`, `PAYMENT_NOT_COMPLETED`, `PAYMENT_PROCESSING`, `PAID_TOO_LATE`, `PAYMENT_MISMATCH`, `PAYMENT_PROVIDER_ERROR` (502), `PAYMENTS_NOT_CONFIGURED` (503), `INVALID_SIGNATURE`.
 
-### Try it without the app (Terminal)
+#### Try it without the app (Terminal)
 
 ```bash
 curl -X POST http://localhost:8080/api/auth/login \
@@ -317,7 +464,7 @@ curl -X DELETE http://localhost:8080/api/branches/4 -H "Authorization: Bearer $T
 
 ---
 
-## 7. Sending real emails (optional)
+### 7. Sending real emails (optional)
 
 1. On your Google account, turn on 2-Step Verification. Then create an **App password** (Google Account → Security → App passwords).
 2. In `local.properties` (not `application.properties`, so the password stays off GitHub):
@@ -329,7 +476,7 @@ curl -X DELETE http://localhost:8080/api/branches/4 -H "Authorization: Bearer $T
 
 ---
 
-## 8. Stripe test mode (payments)
+### 8. Stripe test mode (payments)
 
 Test mode = a Stripe sandbox. Everything works like real payments, but no real money moves and only **test cards** work.
 
@@ -360,15 +507,3 @@ Test mode = a Stripe sandbox. Everything works like real payments, but no real m
 3. It prints `Your webhook signing secret is whsec_...`. Put it in `local.properties` as `app.payments.stripe.webhook-secret=whsec_...` and restart the backend.
 
 **Currency:** prices are in JOD, which has 3 decimals (1 JOD = 1000 fils). Stripe wants whole numbers in the smallest unit, so 20.000 JOD is sent as `20000`. Stripe only accepts dinar amounts in steps of 0.010 (the last digit must be 0); our prices (whole JOD/h × 30/45/60/90 min) always are.
-
----
-
-## 9. Coming next
-
-| Stage | Adds |
-|---|---|
-| 2 | ✅ Done: MySQL, branches CRUD, trainers ↔ branches, working hours, availability, map screen |
-| 3 | ✅ Done: booking requests, trainer accepts/declines, 24 h expiry, prices, My bookings, trainer Requests/Schedule |
-| 4 | ✅ Done: Stripe test-mode payments (`PaymentGateway` interface), 12 h pay deadline, refunds, confirmation email |
-| 5 | Admin endpoints: manage branches, trainers, and slots; cancel bookings. **2FA**: required for admins, optional for members (authenticator app codes) |
-| 6 | Google sign-in |
