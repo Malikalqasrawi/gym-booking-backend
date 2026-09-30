@@ -1,4 +1,3 @@
-# Files Docker must NOT copy into the build (secrets, build output, local data)
 local.properties*
 .env
 .env.*

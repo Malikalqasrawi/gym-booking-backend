@@ -1,12 +1,7 @@
-# ---- Build output (made again by every build) ----
 target/
-
-# ---- Local data (test database files) ----
 data/
 
-# ---- SECRETS: never on GitHub ----
-# local.properties holds the MySQL password, the JWT secret and the Stripe keys.
-# The * also catches copies like local.properties.bak; the example file (no real values) is allowed.
+# Secrets
 local.properties*
 !local.properties.example
 .env
@@ -17,7 +12,7 @@ local.properties*
 *.jks
 *.keystore
 
-# ---- Editor / OS files ----
+# IDE / OS
 nbactions.xml
 nb-configuration.xml
 .idea/
@@ -25,6 +20,3 @@ nb-configuration.xml
 .vscode/
 *.log
 .DS_Store
-
-# ---- Copies of files the Claude app saved here (not part of the project) ----
-Claude outputs/

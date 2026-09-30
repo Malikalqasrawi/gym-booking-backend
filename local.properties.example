@@ -1,27 +1,18 @@
-# ============================================================
-#  PRIVATE settings — copy this file to "local.properties"
-#  (same folder as pom.xml) and fill in your own values.
-#  local.properties is in .gitignore, so your passwords never reach GitHub.
-# ============================================================
+# Copy to local.properties (git-ignored) and fill in.
 
-# Password of the MySQL user gymapp. Don't type it yourself: run
-#   bash scripts/create-db-user.sh
-# and it creates the user and fills this line in.
+# Set by scripts/create-db-user.sh
 spring.datasource.password=PUT_YOUR_MYSQL_PASSWORD_HERE
 
-# The secret that signs login tokens (base64, 64 random bytes). Make your own in Terminal with:
-#   openssl rand -base64 64 | tr -d '\n'
-# Anyone who knows it can create their own admin token: never share it or put it in Git.
+# Base64-encoded, at least 64 bytes: openssl rand -base64 64 | tr -d '\n'
 app.jwt.secret=PUT_A_RANDOM_BASE64_SECRET_HERE
 
-# --- Stripe TEST keys (README section 8). Dashboard → Developers → API keys, in Test mode. ---
-# Only sk_test_ / pk_test_ keys: the backend refuses live keys.
+# Stripe test-mode keys (live keys are rejected)
 #app.payments.stripe.secret-key=sk_test_...
 #app.payments.stripe.publishable-key=pk_test_...
-# Optional: printed by "stripe listen" (README section 8)
+# From `stripe listen` (optional)
 #app.payments.stripe.webhook-secret=whsec_...
 
-# --- Optional: real emails (see README section 7) ---
+# SMTP (optional)
 #app.notifications.mode=email
 #spring.mail.host=smtp-relay.brevo.com
 #spring.mail.port=587

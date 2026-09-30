@@ -1,14 +1,3 @@
-# ------------------------------------------------------------------
-#  The whole backend with ONE command (MySQL 8.4 + the Spring Boot API):
-#
-#      cp .env.example .env      # then fill in .env
-#      docker compose up --build
-#
-#  API: http://localhost:8080/api/health     Stop: Ctrl+C, then "docker compose down"
-#  (Stop the backend in NetBeans first: both want port 8080.)
-#
-#  Secrets come from .env, which .gitignore keeps off GitHub.
-# ------------------------------------------------------------------
 services:
   mysql:
     image: mysql:8.4
@@ -18,14 +7,13 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env}
     volumes:
-      - mysql-data:/var/lib/mysql   # the data survives "docker compose down" (add -v to delete it)
+      - mysql-data:/var/lib/mysql
     healthcheck:
-      # "healthy" = MySQL accepts connections, so the API only starts once the database is ready
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
       interval: 5s
       timeout: 5s
       retries: 30
-    # No "ports:" on purpose: MySQL is only reachable by the API, not from outside
+    # Not published: only the api service can reach the database.
 
   api:
     build: .
@@ -35,8 +23,6 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # Spring Boot reads settings from environment variables too:
-      # spring.datasource.url → SPRING_DATASOURCE_URL, app.payments.stripe.secret-key → APP_PAYMENTS_STRIPE_SECRETKEY
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/gymdb?useSSL=false&allowPublicKeyRetrieval=true
       SPRING_DATASOURCE_USERNAME: gymapp
       SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
