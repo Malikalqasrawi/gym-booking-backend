@@ -21,7 +21,7 @@ problems=0
 # 1. Files that must never be committed
 while IFS= read -r file; do
   case "$(basename "$file")" in
-    local.properties.example) ;;   # the example has no real values: allowed
+    local.properties.example|.env.example) ;;   # examples have no real values: allowed
     local.properties*|.env|.env.*|key.properties|*.jks|*.keystore|*.pem|*.p12)
       echo "✗ $file must not be committed: it holds secrets"
       problems=1 ;;

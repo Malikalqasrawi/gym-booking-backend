@@ -11,6 +11,7 @@ local.properties*
 !local.properties.example
 .env
 .env.*
+!.env.example
 *.pem
 *.p12
 *.jks
@@ -24,3 +25,6 @@ nb-configuration.xml
 .vscode/
 *.log
 .DS_Store
+
+# ---- Copies of files the Claude app saved here (not part of the project) ----
+Claude outputs/
