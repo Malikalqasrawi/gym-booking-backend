@@ -16,17 +16,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Member endpoints for bookings (SecurityConfig: only role MEMBER can call /api/bookings/**).
- *
- *   POST /api/bookings              request a session          → 201 + the new booking (status REQUESTED)
- *   GET  /api/bookings/mine         all my bookings, newest date first
- *   GET  /api/bookings/{id}         one of MY bookings (someone else's id → 404)
- *   POST /api/bookings/{id}/cancel  cancel one of MY bookings
- *
- * @AuthenticationPrincipal = the logged-in user, found by JwtAuthenticationFilter from the token.
- * We never take a user id from the URL or the body.
- */
+/** Member booking endpoints. The member id always comes from the token, never from the request. */
 @RestController
 @RequestMapping("/api/bookings")
 public class BookingController {

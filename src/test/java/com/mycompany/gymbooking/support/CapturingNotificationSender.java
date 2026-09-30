@@ -6,11 +6,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * A pretend mailbox for tests: instead of sending emails, it keeps them in a list
- * so a test can read the verification code or check that a receipt was "sent".
- * (Another test double, like FakeStripe. It works because NotificationSender is an interface.)
- */
+/** Records emails instead of sending them, so tests can read verification codes and check receipts. */
 public final class CapturingNotificationSender implements NotificationSender {
 
     public record Email(String to, String subject, String body) {
@@ -29,7 +25,6 @@ public final class CapturingNotificationSender implements NotificationSender {
         return sent.stream().filter(e -> e.to().equalsIgnoreCase(recipient)).toList();
     }
 
-    /** How many emails to this person have a subject starting with these words. */
     public long count(String recipient, String subjectStart) {
         return to(recipient).stream().filter(e -> e.subject().startsWith(subjectStart)).count();
     }

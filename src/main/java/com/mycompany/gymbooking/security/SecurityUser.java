@@ -7,13 +7,7 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
-/**
- * An ADAPTER between our User entity and Spring Security.
- *
- * Spring Security only understands the UserDetails interface.
- * Instead of making our User entity depend on Spring Security, we wrap it here.
- * This keeps the model package clean (low coupling).
- */
+/** Adapts the User entity to UserDetails so the model doesn't depend on Spring Security. */
 public class SecurityUser implements UserDetails {
 
     private final User user;
@@ -26,7 +20,6 @@ public class SecurityUser implements UserDetails {
         return user;
     }
 
-    /** "ROLE_MEMBER", "ROLE_TRAINER" or "ROLE_ADMIN": used to protect endpoints by role. */
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()));

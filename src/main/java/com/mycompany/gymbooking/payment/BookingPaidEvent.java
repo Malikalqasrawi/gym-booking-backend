@@ -4,10 +4,8 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
- * "Booking X was paid" — published by PaymentServiceImpl, heard by PaymentEmailListener.
- *
- * It carries ready-made text (names, times) because the listener runs AFTER the transaction
- * has ended, when the database objects can't load anything any more.
+ * Published when a booking is paid. Carries pre-formatted values because listeners run after the
+ * transaction commits, when lazy entity associations can no longer be loaded.
  */
 public record BookingPaidEvent(Long bookingId,
                                String memberEmail,

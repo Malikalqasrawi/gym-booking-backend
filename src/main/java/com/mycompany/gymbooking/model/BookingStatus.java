@@ -1,15 +1,8 @@
 package com.mycompany.gymbooking.model;
 
 /**
- * The life of a booking:
- *
- *   REQUESTED ──accept──► ACCEPTED ──pay──► PAID
- *       │  └──reject───► REJECTED   │
- *       │  └──24 h, no answer──► EXPIRED ◄──12 h, not paid──┘
- *       └─────member cancels──► CANCELLED  (also from ACCEPTED, and from PAID until 24 h before)
- *
- * Saved in MySQL as text ("ACCEPTED"), not as a number, so the table is readable
- * and adding a new status later can't shift the meaning of old rows.
+ * Booking lifecycle: REQUESTED -> ACCEPTED -> PAID. A booking can also end as REJECTED, CANCELLED
+ * or EXPIRED (not answered or not paid in time).
  */
 public enum BookingStatus {
     REQUESTED,

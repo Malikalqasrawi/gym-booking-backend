@@ -7,23 +7,13 @@ import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 
-/**
- * Trainers only. Trainers are stored in the "users" table (user_type = 'TRAINER'),
- * and this repository automatically adds that condition to every query.
- *
- *   findByBranchIdOrderByFullNameAsc(2)
- *     → SELECT * FROM users WHERE user_type = 'TRAINER' AND branch_id = 2 ORDER BY full_name
- *
- * "BranchId" means: follow the "branch" field, then use its "id".
- */
 public interface TrainerRepository extends JpaRepository<Trainer, Long> {
 
     List<Trainer> findByBranchIdOrderByFullNameAsc(Long branchId);
 
     /**
-     * Same as findById, but LOCKS the trainer's row until our transaction ends
-     * (SQL: SELECT ... FOR UPDATE). A second request for the same trainer waits at this line
-     * until the first one has saved its booking, so two members can't grab the same time.
+     * Locks the trainer row (SELECT ... FOR UPDATE) for the rest of the transaction, serializing
+     * concurrent bookings for the same trainer so two members can't take the same slot.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<Trainer> findLockedById(Long id);

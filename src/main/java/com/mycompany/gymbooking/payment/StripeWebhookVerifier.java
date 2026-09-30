@@ -14,19 +14,9 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * Checks that a webhook message really comes from Stripe.
- *
- * Our webhook URL is public (Stripe can't log in), so anyone could POST a fake
- * "payment succeeded" to it. Stripe therefore SIGNS every message with a secret only
- * Stripe and we know (whsec_...), and sends the signature in a header:
- *
- *   Stripe-Signature: t=1727700000,v1=5257a869e7ec...
- *
- *   t  = when Stripe sent it (seconds since 1970)
- *   v1 = HMAC-SHA256(secret, t + "." + exact body), in hex
- *
- * We compute the same HMAC. Same result → the body wasn't changed and the sender knows the secret.
- * The time check stops someone from re-sending an old, real message later ("replay attack").
+ * Verifies the Stripe-Signature header of a webhook request. The webhook endpoint is public, so
+ * each payload must carry v1 = HMAC-SHA256(secret, t + "." + body). The timestamp tolerance
+ * rejects replays of old, genuine messages.
  */
 public class StripeWebhookVerifier {
 
@@ -45,7 +35,7 @@ public class StripeWebhookVerifier {
             throw invalid();
         }
 
-        // 1. Split "t=...,v1=...,v1=..." (Stripe may send several v1 values while you change secrets)
+        // Several v1 values may be present while the signing secret is being rolled.
         long timestamp = -1;
         List<String> signatures = new ArrayList<>();
         for (String part : signatureHeader.split(",")) {
@@ -67,17 +57,14 @@ public class StripeWebhookVerifier {
             throw invalid();
         }
 
-        // 2. Too old (or from the future)? Refuse.
         long ageSeconds = Math.abs(clock.instant().getEpochSecond() - timestamp);
         if (ageSeconds > TOLERANCE.toSeconds()) {
             throw new BadRequestException("WEBHOOK_TOO_OLD", "Webhook timestamp is outside the allowed 5 minutes");
         }
 
-        // 3. Our own signature of "t.body"
         byte[] expected = hmacSha256(timestamp + "." + payload);
 
-        // 4. Compare. MessageDigest.isEqual takes the same time whether the first or the last byte differs,
-        //    so an attacker can't guess the signature byte by byte by measuring our response time.
+        // Constant-time comparison to avoid leaking the signature through timing.
         for (String signature : signatures) {
             byte[] given;
             try {
@@ -86,7 +73,7 @@ public class StripeWebhookVerifier {
                 continue;
             }
             if (MessageDigest.isEqual(expected, given)) {
-                return;   // genuine
+                return;
             }
         }
         throw invalid();

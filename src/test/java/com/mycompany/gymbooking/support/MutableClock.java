@@ -5,7 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 
-/** A clock the test can move forward ("wait 30 seconds") without really waiting. */
+/** Clock that tests advance manually instead of waiting in real time. */
 public final class MutableClock extends Clock {
 
     private Instant now;

@@ -12,17 +12,11 @@ import org.springframework.security.web.authentication.WebAuthenticationDetailsS
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Runs ONCE before every request reaches a controller.
+ * Authenticates requests that carry a valid Bearer token for a verified user. A missing or invalid
+ * token is ignored, so protected endpoints answer 401.
  *
- *   1. Look for the header   Authorization: Bearer <token>
- *   2. Ask TokenService which email is inside the token
- *   3. Load that user from the database
- *   4. Tell Spring Security "this request is from user X with role Y"
- *
- * If there's no token or it's invalid, we do nothing. Protected endpoints will then answer 401.
- *
- * Not a @Component on purpose: SecurityConfig creates it and puts it inside the security chain,
- * so Spring Boot doesn't also register it a second time as a normal web filter.
+ * Not a @Component: SecurityConfig adds it to the security chain, and a bean would also be
+ * registered as a regular servlet filter.
  */
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
@@ -58,7 +52,6 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     });
         }
 
-        // Pass the request on to the next filter / the controller
         filterChain.doFilter(request, response);
     }
 }

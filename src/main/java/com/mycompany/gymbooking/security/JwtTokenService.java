@@ -13,14 +13,6 @@ import javax.crypto.SecretKey;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-/**
- * JWT = JSON Web Token. It looks like  xxxxx.yyyyy.zzzzz
- *   xxxxx = header   (which algorithm)
- *   yyyyy = payload  (email, role, expiry time)  ← anyone can READ this, so no secrets inside
- *   zzzzz = signature (made with our secret key) ← nobody can CHANGE the payload without breaking this
- *
- * So when the app sends the token back, we can trust "this is really user X" without a database lookup of sessions.
- */
 @Service
 public class JwtTokenService implements TokenService {
 
@@ -49,14 +41,14 @@ public class JwtTokenService implements TokenService {
     public Optional<String> readEmail(String token) {
         try {
             String email = Jwts.parser()
-                    .verifyWith(signingKey)           // checks the signature
+                    .verifyWith(signingKey)
                     .build()
-                    .parseSignedClaims(token)         // also checks the expiry time
+                    .parseSignedClaims(token)
                     .getPayload()
                     .getSubject();
             return Optional.ofNullable(email);
         } catch (JwtException | IllegalArgumentException e) {
-            return Optional.empty();                  // fake, changed or expired token
+            return Optional.empty();
         }
     }
 }

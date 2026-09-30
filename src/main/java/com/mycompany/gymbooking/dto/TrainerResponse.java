@@ -10,16 +10,7 @@ import java.time.DayOfWeek;
 import java.util.Comparator;
 import java.util.List;
 
-/**
- * What the app gets for a trainer:
- * {
- *   "id": 2, "fullName": "Sara Haddad", "specialty": "Strength & conditioning",
- *   "bio": "...", "yearsOfExperience": 6,
- *   "branchId": 1, "branchName": "Abdoun Branch",
- *   "schedule": [ { "dayOfWeek": "SUNDAY", "startTime": "08:00", "endTime": "16:00" }, ... ]
- * }
- * No email, phone or password: members don't need them.
- */
+/** Public trainer profile. Contact details are intentionally excluded. */
 public record TrainerResponse(
         Long id,
         String fullName,
@@ -28,16 +19,16 @@ public record TrainerResponse(
         Integer yearsOfExperience,
         Long branchId,
         String branchName,
-        BigDecimal hourlyRate,          // JOD per hour; the app multiplies by the duration to show the price
-        TrainingCategory category,      // e.g. "YOGA" (the app shows its own label + icon)
+        BigDecimal hourlyRate,          // JOD per hour
+        TrainingCategory category,
         Gender gender,
-        String languages,               // "Arabic, English"
-        List<String> tags,              // ["Beginners", "Weight loss"]
+        String languages,
+        List<String> tags,
         List<String> certifications,
         List<WorkingHoursResponse> schedule
 ) {
 
-    /** Jordan's week starts on Sunday, so the schedule is sorted SUNDAY → SATURDAY. */
+    /** Sunday first, as the week starts on Sunday in Jordan. */
     private static final Comparator<WorkingHours> WEEK_ORDER =
             Comparator.comparingInt((WorkingHours h) -> sundayFirst(h.getDayOfWeek()))
                       .thenComparing(WorkingHours::getStartTime);
@@ -56,13 +47,12 @@ public record TrainerResponse(
                 trainer.getCategory(),
                 trainer.getGender(),
                 trainer.getLanguages(),
-                List.copyOf(trainer.getTags()),            // copy now, while the database session is still open
+                List.copyOf(trainer.getTags()),            // copy while the lazy collections can still be loaded
                 List.copyOf(trainer.getCertifications()),
                 hours.stream().sorted(WEEK_ORDER).map(WorkingHoursResponse::from).toList()
         );
     }
 
-    /** SUNDAY → 0, MONDAY → 1 ... SATURDAY → 6  (Java's own order starts at MONDAY = 1). */
     private static int sundayFirst(DayOfWeek day) {
         return day.getValue() % 7;
     }

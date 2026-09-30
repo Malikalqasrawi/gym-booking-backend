@@ -13,10 +13,8 @@ import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.stereotype.Component;
 
 /**
- * Security errors happen BEFORE the controllers, so GlobalExceptionHandler can't see them.
- * This class writes them in the same JSON shape (ErrorResponse):
- *   401 → no/invalid token
- *   403 → valid token, but wrong role (e.g. a member calling an admin endpoint)
+ * Writes 401 and 403 responses from the security filter chain as ErrorResponse JSON. These errors
+ * occur before the controllers, so GlobalExceptionHandler never sees them.
  */
 @Component
 public class JsonSecurityErrorHandler implements AuthenticationEntryPoint, AccessDeniedHandler {

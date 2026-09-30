@@ -16,11 +16,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The starter content of the app: 5 branches around Amman and 22 trainers.
- * Only DATA lives here; DataSeeder decides what to save. (The people are made up.)
- *
- * Jordan's weekend is Friday + Saturday, so most trainers work Sunday → Thursday,
- * and some also cover Saturday or Friday.
+ * Starter branches and trainers used by {@link DataSeeder}. All people are fictional.
+ * Jordan's weekend is Friday and Saturday, so most schedules run Sunday to Thursday.
  */
 final class StarterData {
 
@@ -31,7 +28,6 @@ final class StarterData {
                       String phone, LocalTime opens, LocalTime closes) {
     }
 
-    /** One block of a weekly schedule, e.g. SUNDAY 08:00–16:00. */
     record Block(DayOfWeek day, LocalTime start, LocalTime end) {
     }
 
@@ -40,9 +36,6 @@ final class StarterData {
                        String languages, List<String> tags, List<String> certifications, List<Block> schedule) {
     }
 
-    // ------------------------------------------------------------------
-    // Branches
-    // ------------------------------------------------------------------
     static final List<BranchSeed> BRANCHES = List.of(
             new BranchSeed("Abdoun Branch", "Abdoun Circle, Cairo Street", "Amman",
                     31.9454, 35.8818, "+96265000001", LocalTime.of(6, 0), LocalTime.of(23, 0)),
@@ -56,14 +49,10 @@ final class StarterData {
                     32.0206, 35.8950, "+96265000005", LocalTime.of(6, 0), LocalTime.of(22, 30))
     );
 
-    // ------------------------------------------------------------------
-    // Trainers (4–5 per branch)
-    // ------------------------------------------------------------------
     private static final List<DayOfWeek> SUN_TO_THU = List.of(SUNDAY, MONDAY, TUESDAY, WEDNESDAY, THURSDAY);
 
     static final List<TrainerSeed> TRAINERS = List.of(
 
-            // ---------------- Abdoun ----------------
             new TrainerSeed("Sara Haddad", "sara.trainer@gym.com", Gender.FEMALE, "Abdoun Branch",
                     TrainingCategory.STRENGTH, "Strength & conditioning",
                     "Certified strength coach who loves helping beginners.", 6, "20",
@@ -99,13 +88,12 @@ final class StarterData {
                     List.of("BSc Physiotherapy", "NASM Corrective Exercise Specialist (CES)"),
                     hours(10, 18, SUNDAY, TUESDAY, THURSDAY)),
 
-            // ---------------- Khalda ----------------
             new TrainerSeed("Omar Khalil", "omar.trainer@gym.com", Gender.MALE, "Khalda Branch",
                     TrainingCategory.YOGA, "Yoga & mobility",
                     "Yoga instructor focused on flexibility and recovery.", 4, "18",
                     "Arabic, English", List.of("Mobility", "Recovery", "Beginners"),
                     List.of("RYT-200 (Yoga Alliance)"),
-                    // Thursday ends at 23:00, but Khalda closes at 22:00 → the app only offers times until 22:00
+                    // Thursday runs past Khalda's 22:00 closing; availability is capped at closing time
                     join(hours(14, 22, SUNDAY, TUESDAY), hours(16, 23, THURSDAY), hours(10, 18, SATURDAY))),
 
             new TrainerSeed("Dana Saleh", "dana.trainer@gym.com", Gender.FEMALE, "Khalda Branch",
@@ -129,13 +117,11 @@ final class StarterData {
                     List.of("STOTT PILATES Certified Instructor"),
                     hours(8, 14, MONDAY, WEDNESDAY, SATURDAY)),
 
-            // ---------------- Sweifieh ----------------
             new TrainerSeed("Lina Nasser", "lina.trainer@gym.com", Gender.FEMALE, "Sweifieh Branch",
                     TrainingCategory.PILATES, "Pilates & core",
                     "Pilates instructor who builds core strength and better posture.", 5, "22",
                     "Arabic, English", List.of("Core", "Posture", "Back pain"),
                     List.of("BASI Pilates Comprehensive Certificate"),
-                    // Two blocks on the same day = a split shift with a break in the middle
                     join(hours(7, 13, MONDAY, WEDNESDAY), hours(17, 21, MONDAY, WEDNESDAY), hours(9, 15, SATURDAY))),
 
             new TrainerSeed("Faris Al-Zoubi", "faris.trainer@gym.com", Gender.MALE, "Sweifieh Branch",
@@ -166,7 +152,6 @@ final class StarterData {
                     List.of("RYT-200 (Yoga Alliance)", "Registered Prenatal Yoga Teacher (RPYT)"),
                     join(hours(8, 12, SUNDAY, TUESDAY, THURSDAY), hours(10, 13, SATURDAY))),
 
-            // ---------------- Shmeisani ----------------
             new TrainerSeed("Laith Bataineh", "laith.trainer@gym.com", Gender.MALE, "Shmeisani Branch",
                     TrainingCategory.STRENGTH, "Powerlifting",
                     "Squat, bench and deadlift technique for people who want to get seriously strong.", 11, "28",
@@ -195,7 +180,6 @@ final class StarterData {
                     List.of("NASM Corrective Exercise Specialist (CES)"),
                     hours(8, 15, MONDAY, WEDNESDAY, SATURDAY)),
 
-            // ---------------- Jubeiha ----------------
             new TrainerSeed("Mohammad Nsour", "mohammad.trainer@gym.com", Gender.MALE, "Jubeiha Branch",
                     TrainingCategory.STRENGTH, "Student fitness & strength",
                     "Budget-friendly coaching for university students who want to start lifting.", 3, "14",
@@ -225,11 +209,7 @@ final class StarterData {
                     hours(7, 12, SUN_TO_THU))
     );
 
-    // ------------------------------------------------------------------
-    // Small helpers to write schedules quickly
-    // ------------------------------------------------------------------
-
-    /** hours(8, 16, SUNDAY, MONDAY) → Sunday 08–16 and Monday 08–16 */
+    /** One block per day, each from startHour to endHour. */
     private static List<Block> hours(int startHour, int endHour, DayOfWeek... days) {
         return hours(startHour, endHour, List.of(days));
     }
@@ -240,7 +220,6 @@ final class StarterData {
                 .toList();
     }
 
-    /** Joins several lists of blocks into one. */
     @SafeVarargs
     private static List<Block> join(List<Block>... parts) {
         List<Block> all = new ArrayList<>();

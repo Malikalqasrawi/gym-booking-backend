@@ -6,13 +6,7 @@ import jakarta.validation.constraints.Size;
 import java.time.LocalDate;
 import java.time.LocalTime;
 
-/**
- * What the app sends to request a session:
- * { "trainerId": 2, "date": "2026-10-04", "startTime": "10:00", "durationMinutes": 60, "note": "First time" }
- *
- * No memberId here on purpose: the member is ALWAYS taken from the login token,
- * so nobody can book in someone else's name.
- */
+/** Has no member id: the member is always taken from the auth token. */
 public record BookingRequest(
 
         @NotNull(message = "Trainer is required")

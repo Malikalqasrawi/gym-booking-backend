@@ -3,10 +3,10 @@ package com.mycompany.gymbooking.payment;
 import java.math.BigDecimal;
 
 /**
- * "The money for booking X was given back."
+ * Published when a booking payment is refunded.
  *
- * @param paidTooLate true = the booking had already expired/been cancelled when the payment arrived,
- *                    false = the member cancelled a paid session in time
+ * @param paidTooLate true if the payment arrived after the booking had expired or been cancelled;
+ *                    false if the member cancelled a paid session in time
  */
 public record BookingRefundedEvent(Long bookingId,
                                    String memberEmail,

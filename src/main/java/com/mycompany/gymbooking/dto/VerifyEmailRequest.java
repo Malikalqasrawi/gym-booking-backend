@@ -4,7 +4,6 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 
-/** JSON body for POST /api/auth/verify  →  { "email": "...", "code": "123456" } */
 public record VerifyEmailRequest(
 
         @NotBlank(message = "Email is required")

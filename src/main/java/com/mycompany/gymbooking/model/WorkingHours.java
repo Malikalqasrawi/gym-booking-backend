@@ -15,13 +15,8 @@ import java.time.DayOfWeek;
 import java.time.LocalTime;
 
 /**
- * One block of a trainer's weekly schedule, e.g. "Sara works SUNDAY 08:00–16:00".
- *
- * A trainer can have several rows: one per working day, or even two on the same day
- * (a split shift like 07:00–13:00 and 17:00–21:00).
- *
- * Table "working_hours":
- *   id | trainer_id (→ users.id) | day_of_week | start_time | end_time
+ * One block of a trainer's weekly schedule. A trainer may have several blocks on the same day
+ * (split shifts).
  */
 @Entity
 @Table(name = "working_hours")
@@ -31,12 +26,10 @@ public class WorkingHours {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** RELATIONSHIP: many working-hours rows belong to one trainer (FOREIGN KEY trainer_id). */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "trainer_id", nullable = false)
     private Trainer trainer;
 
-    /** Java's built-in enum: MONDAY ... SUNDAY. STRING stores the name ("SUNDAY"), not a number. */
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 10)
     private DayOfWeek dayOfWeek;

@@ -23,19 +23,8 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 /**
- * Who is allowed to call which endpoint.
- *
- *   /api/auth/**     → everyone (sign up, verify, login)
- *   /api/health      → everyone
- *   POST /api/payments/stripe/webhook → everyone (it's Stripe; checked by its signature instead of a login)
- *   GET  /api/branches/**, /api/trainers/**  → any logged-in user
- *   POST/PUT/DELETE /api/branches/**  → only ADMIN
- *   /api/admin/**    → only ADMIN      (Stage 5)
- *   /api/trainer/**  → only TRAINER    (answer requests, see schedule)
- *   /api/bookings/** → only MEMBER     (request, list, cancel, pay)
- *   everything else  → any logged-in user
- *
- * Every request first passes RateLimitFilter (too many per minute from one IP → 429).
+ * Stateless JWT security with role-based access per API prefix. The Stripe webhook is public
+ * because it is verified by its signature instead.
  */
 @Configuration
 @EnableWebSecurity
@@ -56,10 +45,9 @@ public class SecurityConfig {
         RateLimitFilter rateLimitFilter = new RateLimitFilter(rateLimiter, objectMapper, authPerMinute, generalPerMinute);
 
         http
-                // CSRF protection is for browser cookie logins; we use tokens in headers instead
+                // Tokens are sent in headers, not cookies, so CSRF doesn't apply
                 .csrf(csrf -> csrf.disable())
 
-                // No server-side sessions: every request must carry its own token
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
                 .authorizeHttpRequests(auth -> auth
@@ -73,27 +61,23 @@ public class SecurityConfig {
                         .requestMatchers("/api/bookings/**").hasRole("MEMBER")
                         .anyRequest().authenticated())
 
-                // Return our JSON errors for 401 / 403
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(errorHandler)
                         .accessDeniedHandler(errorHandler))
 
-                // Check the JWT before Spring's own login filter
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
 
-                // Count requests even earlier, before the JWT check: floods are stopped as cheaply as possible
+                // Rate limit before JWT parsing so floods are rejected as cheaply as possible
                 .addFilterBefore(rateLimitFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }
 
-    /** BCrypt turns "Secret123" into "$2a$10$Xy..." (one-way: it can't be turned back). */
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
-    /** Tells Spring Security how to find a user by email (uses our SecurityUser adapter). */
     @Bean
     public UserDetailsService userDetailsService(UserRepository userRepository) {
         return email -> userRepository.findByEmailIgnoreCase(email)

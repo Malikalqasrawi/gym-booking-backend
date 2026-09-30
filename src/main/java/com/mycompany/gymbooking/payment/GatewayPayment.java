@@ -3,12 +3,11 @@ package com.mycompany.gymbooking.payment;
 import java.math.BigDecimal;
 
 /**
- * A payment as the provider sees it.
+ * A payment as reported by the provider.
  *
- * @param id           the provider's id, e.g. "pi_3Q1x..."
- * @param clientSecret lets the APP open the payment screen for THIS payment only (it can't do anything else)
- * @param cardBrand    "visa" (only once paid)
- * @param cardLast4    "4242" (only once paid)
+ * @param clientSecret lets the app complete this one payment and nothing else
+ * @param cardBrand    set only once paid
+ * @param cardLast4    set only once paid
  */
 public record GatewayPayment(String id,
                              String clientSecret,

@@ -14,17 +14,12 @@ import org.springframework.http.MediaType;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Counts every request per IP address and answers 429 when someone sends too many.
+ * Per-IP rate limiting, with a stricter limit for /api/auth/** since login and verification codes
+ * are the usual attack targets. Runs first in the security chain so floods are rejected before any
+ * JWT, BCrypt or database work.
  *
- * It runs FIRST in the security chain (before the JWT check, before BCrypt, before the database),
- * so a flood of requests is stopped as cheaply as possible.
- *
- * Two rules, each with its own bucket:
- *   /api/auth/**    → app.rate-limit.auth-per-minute     (login, sign up, codes: what attackers target)
- *   everything else → app.rate-limit.general-per-minute
- *
- * Not a @Component on purpose: SecurityConfig creates it and puts it in the right place in the chain
- * (a @Component filter would ALSO be added by Spring Boot on its own and run twice).
+ * Not a @Component: SecurityConfig places it in the chain, and a bean would also be registered as a
+ * regular servlet filter and run twice.
  */
 public class RateLimitFilter extends OncePerRequestFilter {
 
@@ -50,18 +45,16 @@ public class RateLimitFilter extends OncePerRequestFilter {
         boolean isAuth = request.getRequestURI().startsWith("/api/auth/");
         int limit = isAuth ? authPerMinute : generalPerMinute;
 
-        // getRemoteAddr() = the IP address that actually connected to us.
-        // We do NOT read the "X-Forwarded-For" header: anyone can put any IP in it,
-        // so an attacker would get a brand-new bucket on every request.
+        // Keyed on the socket address, not X-Forwarded-For: that header is client-controlled and
+        // would let an attacker get a fresh bucket on every request.
         String key = (isAuth ? "auth:" : "general:") + request.getRemoteAddr();
 
         RateLimiter.Decision decision = rateLimiter.tryConsume(key, limit, WINDOW);
         if (decision.allowed()) {
-            filterChain.doFilter(request, response);   // carry on to the next filter / the controller
+            filterChain.doFilter(request, response);
             return;
         }
 
-        // Blocked: answer right here. The controller never runs.
         long seconds = decision.retryAfterSeconds();
         response.setStatus(429);
         response.setHeader(HttpHeaders.RETRY_AFTER, String.valueOf(seconds));

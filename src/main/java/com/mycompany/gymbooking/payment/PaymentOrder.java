@@ -4,14 +4,10 @@ import java.math.BigDecimal;
 import java.util.Map;
 
 /**
- * What we ask the provider to charge.
+ * A charge request sent to the provider.
  *
- * @param idempotencyKey if this exact request is sent twice (e.g. the network dropped the first answer),
- *                       Stripe returns the SAME payment instead of creating a second one
- * @param amount         e.g. 20.000
- * @param currency       e.g. "JOD"
- * @param description    shown in the Stripe Dashboard
- * @param metadata       our own ids, saved on Stripe's side too (e.g. booking_id=58)
+ * @param idempotencyKey a retried request with the same key returns the original payment instead of a new one
+ * @param metadata       internal ids stored with the payment at the provider
  */
 public record PaymentOrder(String idempotencyKey,
                            BigDecimal amount,

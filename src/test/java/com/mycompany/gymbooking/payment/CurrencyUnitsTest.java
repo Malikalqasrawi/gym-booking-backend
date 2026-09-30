@@ -7,7 +7,7 @@ import java.math.BigDecimal;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/** Stripe wants whole numbers in the smallest unit: fils for JOD (3 decimals), cents for USD. */
+/** Stripe amounts are integers in the currency's minor unit; JOD has 3 decimals (fils). */
 class CurrencyUnitsTest {
 
     @Test

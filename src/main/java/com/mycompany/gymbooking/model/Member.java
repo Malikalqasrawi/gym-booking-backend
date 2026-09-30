@@ -3,10 +3,6 @@ package com.mycompany.gymbooking.model;
 import jakarta.persistence.DiscriminatorValue;
 import jakarta.persistence.Entity;
 
-/**
- * A gym member: signs up in the app, books sessions and pays for them.
- * Stored in the "users" table with user_type = 'MEMBER'.
- */
 @Entity
 @DiscriminatorValue("MEMBER")
 public class Member extends User {

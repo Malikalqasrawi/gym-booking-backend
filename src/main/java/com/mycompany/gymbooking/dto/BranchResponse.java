@@ -4,10 +4,6 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import com.mycompany.gymbooking.model.Branch;
 import java.time.LocalTime;
 
-/**
- * What the API sends back for a branch (READ, and after CREATE / UPDATE):
- * { "id": 1, "name": "Abdoun Branch", ..., "openingTime": "06:00", "closingTime": "23:00" }
- */
 public record BranchResponse(
         Long id,
         String name,

@@ -4,11 +4,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 
 /**
- * Base class for every "expected" error in our API (wrong code, email taken, not found...).
- *
- * ABSTRACTION + INHERITANCE: each subclass fixes its own HTTP status,
- * so services just write:   throw new ConflictException("EMAIL_TAKEN", "...");
- * and GlobalExceptionHandler turns ANY ApiException into a proper JSON error.
+ * Base class for expected API errors. Each subclass defines its HTTP status, and
+ * GlobalExceptionHandler renders it as an ErrorResponse.
  */
 public abstract class ApiException extends RuntimeException {
 
@@ -19,16 +16,14 @@ public abstract class ApiException extends RuntimeException {
         this.code = code;
     }
 
-    /** Each subclass decides which HTTP status it represents (polymorphism). */
     public abstract HttpStatus getStatus();
 
-    /** A short machine-readable code the app can check, e.g. "EMAIL_NOT_VERIFIED". */
+    /** Machine-readable error code for clients. */
     public String getCode() {
         return code;
     }
 
-    /** Extra HTTP headers for this error. Most errors have none; subclasses can add some (e.g. Retry-After). */
+    /** Adds error-specific response headers. No-op by default. */
     public void writeHeaders(HttpHeaders headers) {
-        // nothing by default
     }
 }

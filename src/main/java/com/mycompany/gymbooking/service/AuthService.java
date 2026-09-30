@@ -7,21 +7,17 @@ import com.mycompany.gymbooking.dto.ResendCodeRequest;
 import com.mycompany.gymbooking.dto.SignUpRequest;
 import com.mycompany.gymbooking.dto.VerifyEmailRequest;
 
-/**
- * WHAT the authentication feature can do (not HOW).
- * AuthController depends on this interface, not on the implementation class.
- */
+/** Member sign-up, email verification and login. */
 public interface AuthService {
 
-    /** Creates a new (unverified) member and sends them a verification code. */
+    /** Creates an unverified member and sends a verification code. */
     MessageResponse signUp(SignUpRequest request);
 
-    /** Checks the code; if correct, marks the email verified and logs the user in. */
+    /** Verifies the email with the given code and logs the user in. */
     AuthResponse verifyEmail(VerifyEmailRequest request);
 
-    /** Sends a fresh code (old one stops working). */
+    /** Sends a new code and invalidates the previous one. */
     MessageResponse resendCode(ResendCodeRequest request);
 
-    /** Checks email + password and returns a token. */
     AuthResponse login(LoginRequest request);
 }

@@ -8,15 +8,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Database changes that Hibernate's ddl-auto=update can't do by itself.
- *
- * "update" ADDS new tables and new columns, but it never CHANGES an existing column.
- * Before Stage 4, bookings.status was a MySQL enum('ACCEPTED','CANCELLED','EXPIRED','REJECTED','REQUESTED'),
- * so MySQL would refuse the new value 'PAID'. Here we turn it into VARCHAR(20) once.
- *
- * Every step checks first, so running it on every start is harmless (it does nothing the 2nd time).
- * @PostConstruct runs while the app starts, before the server accepts any request.
- * (Real projects use a migration tool like Flyway for this; one step doesn't need it yet.)
+ * Schema changes that ddl-auto=update can't make, since it never alters existing columns.
+ * Older databases have bookings.status as a MySQL ENUM, which rejects newer statuses such as PAID.
+ * Each step checks the current schema first, so it is safe to run on every startup.
  */
 @Component
 public class SchemaUpgrades {
@@ -35,7 +29,7 @@ public class SchemaUpgrades {
     }
 
     private void enumColumnToVarchar(String table, String column) {
-        // What type is the column now? (no rows = the table doesn't exist yet → Hibernate creates it as VARCHAR)
+        // No rows means the table doesn't exist yet; Hibernate will create it as VARCHAR.
         List<String> types = jdbc.queryForList("""
                 SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA = SCHEMA() AND LOWER(TABLE_NAME) = ? AND LOWER(COLUMN_NAME) = ?
@@ -43,7 +37,7 @@ public class SchemaUpgrades {
         if (types.isEmpty() || !types.get(0).equalsIgnoreCase("enum")) {
             return;
         }
-        // Table and column names are fixed words from this class (never user input), so building the SQL is safe
+        // Identifiers are constants from this class, never user input
         jdbc.execute("ALTER TABLE " + table + " MODIFY " + column + " VARCHAR(20) NOT NULL");
         log.info("Database upgraded: {}.{} is now VARCHAR(20) (it was an enum)", table, column);
     }

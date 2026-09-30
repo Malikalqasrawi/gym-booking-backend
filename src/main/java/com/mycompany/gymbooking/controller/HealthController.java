@@ -5,10 +5,7 @@ import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * The simplest possible endpoint. Open http://localhost:8080/api/health in your browser
- * to check the backend is running. The app also calls it to show "server offline" messages.
- */
+/** Liveness check; the app also uses it to detect that the server is offline. */
 @RestController
 public class HealthController {
 

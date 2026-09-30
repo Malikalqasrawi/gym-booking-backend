@@ -11,7 +11,7 @@ import java.time.LocalTime;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/** Payment's rules: PENDING → SUCCEEDED → REFUNDED, in that order only. */
+/** Payment status may only move PENDING -> SUCCEEDED -> REFUNDED. */
 class PaymentTest {
 
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 10, 1, 9, 0);

@@ -3,9 +3,6 @@ package com.mycompany.gymbooking.model;
 import jakarta.persistence.DiscriminatorValue;
 import jakarta.persistence.Entity;
 
-/**
- * The gym administrator: manages branches, trainers, time slots and bookings.
- */
 @Entity
 @DiscriminatorValue("ADMIN")
 public class Admin extends User {
