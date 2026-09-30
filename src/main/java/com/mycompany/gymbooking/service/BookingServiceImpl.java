@@ -36,12 +36,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * The booking rules.
- *
- * Who may do what:
- *   - a member only sees and cancels THEIR bookings        (findByIdAndMemberId)
- *   - a trainer only sees and answers requests sent to THEM (findByIdAndTrainerId)
- *   - anything else → 404 "not found", as if the booking didn't exist
+ * Booking lifecycle for members and trainers. Lookups are scoped to the caller's member or trainer
+ * id, so another user's booking returns 404 as if it didn't exist.
  */
 @Service
 public class BookingServiceImpl implements BookingService {
@@ -49,7 +45,6 @@ public class BookingServiceImpl implements BookingService {
     private static final Logger log = LoggerFactory.getLogger(BookingServiceImpl.class);
     private static final DateTimeFormatter TIME_AND_DAY = DateTimeFormatter.ofPattern("HH:mm 'on' EEE d MMM", Locale.ENGLISH);
 
-    /** A trainer's schedule: accepted (waiting for payment) and paid sessions. */
     private static final Set<BookingStatus> SCHEDULED = EnumSet.of(BookingStatus.ACCEPTED, BookingStatus.PAID);
 
     private final BookingRepository bookingRepository;
@@ -91,29 +86,20 @@ public class BookingServiceImpl implements BookingService {
         this.maxPendingPerMember = maxPendingPerMember;
     }
 
-    // ==================================================================
-    // MEMBER
-    // ==================================================================
-
-    /**
-     * READ_COMMITTED: every query in this method sees the newest SAVED data, including a booking
-     * another member saved while we were waiting for the lock in step 1.
-     */
+    /** READ_COMMITTED so the checks after the trainer lock see bookings committed while waiting for it. */
     @Override
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public BookingResponse requestSession(Long memberId, BookingRequest request) {
         LocalDateTime now = LocalDateTime.now(clock);
 
-        // 1. Lock the trainer. If two members ask for this trainer at the same moment,
-        //    the second one waits here until the first one has finished (like taking a ticket).
+        // Pessimistic lock on the trainer serializes concurrent requests for them, preventing double booking.
         Trainer trainer = trainerRepository.findLockedById(request.trainerId())
                 .orElseThrow(() -> new NotFoundException("TRAINER_NOT_FOUND", "No trainer with id " + request.trainerId()));
         if (!trainer.hasHourlyRate()) {
             throw new ConflictException("TRAINER_NOT_BOOKABLE", "This trainer isn't taking bookings yet.");
         }
 
-        // 2. Is that start time really free? We reuse the SAME rules that produced the times in the app
-        //    (duration, 14 days ahead, working hours, branch hours, 60 min notice, already taken).
+        // Re-validate the slot with the same rules that produced the offered times.
         AvailabilityResponse free = availabilityService.getAvailability(
                 trainer.getId(), request.date(), request.durationMinutes());
         boolean offered = free.slots().stream().anyMatch(slot -> slot.start().equals(request.startTime()));
@@ -124,7 +110,6 @@ public class BookingServiceImpl implements BookingService {
         Member member = findMember(memberId);
         LocalTime end = request.startTime().plusMinutes(request.durationMinutes());
 
-        // 3. A member can't be in two sessions at once (e.g. Sara and Omar at 10:00)
         boolean busy = bookingRepository.findByMemberIdAndDateAndStatusIn(memberId, request.date(), Booking.SLOT_HOLDING)
                 .stream()
                 .anyMatch(b -> b.holdsSlotAt(now) && b.overlaps(request.startTime(), end));
@@ -132,7 +117,7 @@ public class BookingServiceImpl implements BookingService {
             throw new ConflictException("MEMBER_BUSY", "You already have a session at that time.");
         }
 
-        // 4. Limit unanswered requests, so one person can't block every trainer's week
+        // Pending requests hold slots, so cap them to stop one member blocking trainers' calendars.
         long waiting = bookingRepository.findByMemberIdAndStatus(memberId, BookingStatus.REQUESTED)
                 .stream()
                 .filter(b -> b.holdsSlotAt(now))
@@ -142,7 +127,6 @@ public class BookingServiceImpl implements BookingService {
                     + " requests waiting for an answer. Wait for a reply or cancel one first.");
         }
 
-        // 5. Save. The trainer must answer within 24 h, or before the session starts if that's sooner.
         LocalDateTime startsAt = LocalDateTime.of(request.date(), request.startTime());
         LocalDateTime deadline = now.plusHours(requestExpiryHours);
         LocalDateTime respondBy = deadline.isBefore(startsAt) ? deadline : startsAt;
@@ -159,7 +143,7 @@ public class BookingServiceImpl implements BookingService {
         return BookingResponse.from(booking, now);
     }
 
-    /** With each booking's receipt: all payments are loaded in ONE extra query, not one per booking. */
+    /** Includes each booking's payment, loaded in a single query rather than one per booking. */
     @Override
     @Transactional(readOnly = true)
     public List<BookingResponse> myBookings(Long memberId) {
@@ -184,8 +168,8 @@ public class BookingServiceImpl implements BookingService {
     }
 
     /**
-     * The booking is LOCKED first: if a payment is being confirmed at the same moment, we wait for it,
-     * then see PAID and refund. Otherwise we could cancel a booking without refunding its money.
+     * Locks the booking so a concurrent payment confirmation completes first and is seen as PAID;
+     * otherwise a just-paid booking could be cancelled without a refund.
      */
     @Override
     @Transactional
@@ -195,9 +179,9 @@ public class BookingServiceImpl implements BookingService {
                 .orElseThrow(() -> new NotFoundException("BOOKING_NOT_FOUND", "Booking not found"));
 
         boolean wasPaid = booking.statusAt(now) == BookingStatus.PAID;
-        booking.cancelByMember(now);   // throws if it's not allowed (already rejected, started, < 24 h for paid...)
+        booking.cancelByMember(now);
 
-        // Paid → give the money back. If Stripe refuses, the exception undoes the cancel too (still PAID).
+        // If the Stripe refund fails, the exception rolls back the cancellation as well.
         Payment payment = wasPaid
                 ? paymentService.refundCancelledBooking(booking, now)
                 : paymentRepository.findByBookingId(bookingId).orElse(null);
@@ -208,23 +192,17 @@ public class BookingServiceImpl implements BookingService {
         return BookingResponse.from(booking, payment, now);
     }
 
-    // ==================================================================
-    // TRAINER
-    // ==================================================================
-
-    /** Requests waiting for an answer, the most urgent (closest deadline) first. */
     @Override
     @Transactional(readOnly = true)
     public List<BookingResponse> pendingRequests(Long trainerId) {
         LocalDateTime now = LocalDateTime.now(clock);
         return bookingRepository.findByTrainerIdAndStatusOrderByRespondByAtAsc(trainerId, BookingStatus.REQUESTED)
                 .stream()
-                .filter(b -> b.holdsSlotAt(now))              // hide the ones that just expired
+                .filter(b -> b.holdsSlotAt(now))              // overdue but not yet marked EXPIRED
                 .map(b -> BookingResponse.from(b, now))
                 .toList();
     }
 
-    /** Accepted (waiting for payment) and paid sessions that haven't finished yet, soonest first. */
     @Override
     @Transactional(readOnly = true)
     public List<BookingResponse> upcomingSchedule(Long trainerId) {
@@ -233,7 +211,7 @@ public class BookingServiceImpl implements BookingService {
                 .findByTrainerIdAndStatusInAndDateGreaterThanEqualOrderByDateAscStartTimeAsc(
                         trainerId, SCHEDULED, now.toLocalDate())
                 .stream()
-                .filter(b -> b.holdsSlotAt(now) && b.getEndsAt().isAfter(now))   // hides unpaid ones past their deadline
+                .filter(b -> b.holdsSlotAt(now) && b.getEndsAt().isAfter(now))   // drops unpaid ones past their deadline
                 .map(b -> BookingResponse.from(b, now))
                 .toList();
     }
@@ -244,11 +222,10 @@ public class BookingServiceImpl implements BookingService {
         LocalDateTime now = LocalDateTime.now(clock);
         Booking booking = trainerBooking(trainerId, bookingId);
 
-        // The member must pay within 12 h, or before the session starts if that's sooner
         LocalDateTime deadline = now.plusHours(paymentWindowHours);
         LocalDateTime payBy = deadline.isBefore(booking.getStartsAt()) ? deadline : booking.getStartsAt();
 
-        booking.accept(message, now, payBy);   // throws if it isn't waiting for an answer any more
+        booking.accept(message, now, payBy);
 
         notificationSender.send(booking.getMember().getEmail(), "Your session was accepted 🎉",
                 booking.getTrainer().getFullName() + " accepted your session on " + BookingTexts.when(booking) + ".\n"
@@ -274,14 +251,9 @@ public class BookingServiceImpl implements BookingService {
         return BookingResponse.from(booking, now);
     }
 
-    // ==================================================================
-    // HOUSEKEEPING
-    // ==================================================================
-
     /**
-     * Not @Transactional on purpose: each booking gets its OWN small transaction (TransactionTemplate),
-     * and only that one row is locked. So one busy booking (e.g. a payment being confirmed right now)
-     * can't block or undo the others, and members/trainers are never locked out while the job runs.
+     * Deliberately not @Transactional: each booking is expired in its own short transaction that locks
+     * only that row, so one contended booking can't block or roll back the others.
      */
     @Override
     public int expireOverdue() {
@@ -301,20 +273,18 @@ public class BookingServiceImpl implements BookingService {
         return expired;
     }
 
-    /** Runs inside its own transaction. The lock makes sure a payment confirmed a second ago wins. */
+    /** Locks the booking so a payment confirmed concurrently takes precedence over expiry. */
     private boolean expireOne(Long bookingId, LocalDateTime now) {
         Booking booking = bookingRepository.findLockedById(bookingId).orElse(null);
         if (booking == null || !booking.expireIfOverdue(now)) {
-            return false;   // paid / cancelled in the meantime
+            return false;   // paid or cancelled in the meantime
         }
         String trainer = booking.getTrainer().getFullName();
         if (booking.getRespondedAt() == null) {
-            // Nobody answered the request
             notificationSender.send(booking.getMember().getEmail(), "Your session request expired",
                     trainer + " didn't answer your request for " + BookingTexts.when(booking)
                             + " in time, so it was cancelled. Please pick another time in the app.");
         } else {
-            // Accepted, but not paid in time
             notificationSender.send(booking.getMember().getEmail(), "Your booking expired",
                     "Your session with " + trainer + " on " + BookingTexts.when(booking)
                             + " wasn't paid in time, so the time was released. Nothing was charged.");
@@ -325,17 +295,11 @@ public class BookingServiceImpl implements BookingService {
         return true;
     }
 
-    // ==================================================================
-    // Helpers
-    // ==================================================================
-
-    /** Booking `bookingId`, but only if it belongs to this member. Otherwise 404. */
     private Booking memberBooking(Long memberId, Long bookingId) {
         return bookingRepository.findByIdAndMemberId(bookingId, memberId)
                 .orElseThrow(() -> new NotFoundException("BOOKING_NOT_FOUND", "Booking not found"));
     }
 
-    /** Booking `bookingId`, but only if it was sent to this trainer. Otherwise 404. */
     private Booking trainerBooking(Long trainerId, Long bookingId) {
         return bookingRepository.findByIdAndTrainerId(bookingId, trainerId)
                 .orElseThrow(() -> new NotFoundException("BOOKING_NOT_FOUND", "Booking not found"));

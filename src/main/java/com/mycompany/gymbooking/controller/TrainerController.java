@@ -17,17 +17,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Read-only endpoints members use while choosing a session (any logged-in user):
- *
- *   GET /api/branches/{branchId}/trainers                       → trainers at that branch
- *   GET /api/trainers/{id}                                      → one trainer + weekly schedule
- *   GET /api/trainers/{id}/availability?date=2026-10-04&duration=60
- *                                                               → free start times that day
- *
- * PATH variables  (/trainers/2)        identify WHICH thing.
- * QUERY parameters (?date=...&duration=60) are options for HOW to read it.
- */
 @RestController
 @RequestMapping("/api")
 public class TrainerController {
@@ -40,10 +29,6 @@ public class TrainerController {
         this.availabilityService = availabilityService;
     }
 
-    /**
-     * Optional filters, e.g. /api/branches/1/trainers?category=YOGA&gender=FEMALE&maxRate=20
-     * Spring turns "YOGA" into TrainingCategory.YOGA; an unknown value → 400 INVALID_PARAMETER.
-     */
     @GetMapping("/branches/{branchId}/trainers")
     public List<TrainerResponse> trainersAtBranch(@PathVariable Long branchId,
                                                   @RequestParam(required = false) TrainingCategory category,
@@ -57,10 +42,6 @@ public class TrainerController {
         return trainerService.findById(id);
     }
 
-    /**
-     * @DateTimeFormat(ISO.DATE) → the date must look like 2026-10-04 (year-month-day).
-     * defaultValue = "60"      → if the app doesn't send ?duration=..., use 60 minutes.
-     */
     @GetMapping("/trainers/{id}/availability")
     public AvailabilityResponse availability(@PathVariable Long id,
                                              @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,

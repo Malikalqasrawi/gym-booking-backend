@@ -5,10 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-/**
- * Development version: instead of emailing, it prints the message in the NetBeans Output window.
- * Active when app.notifications.mode=console (also the default if the setting is missing).
- */
+/** Development sender that logs messages instead of emailing them. Used by default. */
 @Component
 @ConditionalOnProperty(name = "app.notifications.mode", havingValue = "console", matchIfMissing = true)
 public class ConsoleNotificationSender implements NotificationSender {

@@ -11,7 +11,7 @@ import java.time.ZoneOffset;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/** The token bucket: 10 requests per minute per visitor, refilling a little every 6 seconds. */
+/** Token bucket per key: at 10 requests per minute, one token refills every 6 seconds. */
 class InMemoryRateLimiterTest {
 
     private static final Duration MINUTE = Duration.ofMinutes(1);

@@ -1,11 +1,5 @@
 package com.mycompany.gymbooking.model;
 
-/**
- * The main kind of training a trainer does. Used by the "filter by specialty" chips in the app:
- *   GET /api/branches/1/trainers?category=YOGA
- *
- * Each value carries its own label (an enum can have fields and a constructor, like a class).
- */
 public enum TrainingCategory {
     STRENGTH("Strength"),
     HIIT("HIIT & cardio"),

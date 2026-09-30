@@ -12,14 +12,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Paying for a booking.
- *
- *   POST /api/bookings/{id}/payment          (member) → clientSecret etc. to open Stripe's payment screen
- *   POST /api/bookings/{id}/payment/confirm  (member) → we ask Stripe; if paid, the booking becomes PAID
- *   POST /api/payments/stripe/webhook        (Stripe) → Stripe's own "payment succeeded" message.
- *                                              No login (Stripe can't log in); checked by signature instead.
- */
 @RestController
 public class PaymentController {
 
@@ -40,8 +32,8 @@ public class PaymentController {
     }
 
     /**
-     * The body is read as a plain String on purpose: the signature is calculated over the EXACT bytes
-     * Stripe sent. Turning it into an object and back could change spaces or field order → wrong signature.
+     * Public endpoint (Stripe cannot authenticate); requests are verified by signature instead.
+     * The body is kept as a raw String because the signature covers the exact bytes Stripe sent.
      */
     @PostMapping("/api/payments/stripe/webhook")
     public ResponseEntity<Void> stripeWebhook(@RequestBody String payload,

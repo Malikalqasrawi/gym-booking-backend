@@ -15,22 +15,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 
 /**
- * A pretend Stripe for tests: a tiny web server (built into Java, no extra library) that answers
- * the same 3 calls our StripePaymentGateway makes:
- *
- *   POST /v1/payment_intents        POST /v1/refunds        GET /v1/payment_intents/{id}
- *
- * The tests then play "the customer" and "the bank" with the methods below:
- *   pay(id, "visa", "4242")   decline(id)   processing(id)   failNextRefund()
- *
- * This is a TEST DOUBLE (a "mock"): our real code runs unchanged, only Stripe is replaced,
- * so we can test declined cards, slow banks and Stripe errors without internet or a Stripe account.
+ * Local HTTP server that imitates the Stripe endpoints StripePaymentGateway uses (create and
+ * retrieve PaymentIntent, create refund), including Idempotency-Key replay. Tests drive payment
+ * outcomes with pay, decline, processing and failNextRefund.
  */
 public final class FakeStripe implements AutoCloseable {
 
     public static final String SECRET_KEY = "sk_test_fake_key_for_tests";
 
-    /** One HTTP request as Stripe would have received it. */
     public record Request(String method, String path, Map<String, String> form, String idempotencyKey, String contentType) {
     }
 
@@ -47,7 +39,7 @@ public final class FakeStripe implements AutoCloseable {
     private int refundFailuresToSimulate = 0;
 
     private FakeStripe() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);   // port 0 = any free port
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", this::handle);
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
@@ -66,11 +58,6 @@ public final class FakeStripe implements AutoCloseable {
         server.stop(0);
     }
 
-    // ------------------------------------------------------------------
-    // What the customer / the bank does (called by the tests)
-    // ------------------------------------------------------------------
-
-    /** The customer paid with this card. */
     public synchronized void pay(String paymentIntentId, String brand, String last4) {
         Map<String, Object> intent = intent(paymentIntentId);
         intent.put("status", "succeeded");
@@ -80,24 +67,19 @@ public final class FakeStripe implements AutoCloseable {
                 "payment_method_details", Map.of("type", "card", "card", Map.of("brand", brand, "last4", last4))));
     }
 
-    /** The card was declined: Stripe keeps the payment open so the customer can try another card. */
+    /** A declined card leaves the intent open (requires_payment_method) so another card can be tried. */
     public synchronized void decline(String paymentIntentId) {
         intent(paymentIntentId).put("status", "requires_payment_method");
     }
 
-    /** The bank is still working on it. */
     public synchronized void processing(String paymentIntentId) {
         intent(paymentIntentId).put("status", "processing");
     }
 
-    /** The next refund request fails with a Stripe server error (500). */
+    /** Makes the next refund request fail with a 500. */
     public synchronized void failNextRefund() {
         refundFailuresToSimulate++;
     }
-
-    // ------------------------------------------------------------------
-    // What the tests can check afterwards
-    // ------------------------------------------------------------------
 
     public List<Request> requests(String method, String path) {
         return requests.stream().filter(r -> r.method().equals(method) && r.path().equals(path)).toList();
@@ -119,10 +101,6 @@ public final class FakeStripe implements AutoCloseable {
         return intent;
     }
 
-    // ------------------------------------------------------------------
-    // The pretend Stripe API
-    // ------------------------------------------------------------------
-
     private synchronized void handle(HttpExchange exchange) throws IOException {
         String method = exchange.getRequestMethod();
         String path = exchange.getRequestURI().getPath();
@@ -136,7 +114,7 @@ public final class FakeStripe implements AutoCloseable {
             return;
         }
 
-        // Same Idempotency-Key again → the SAME answer as the first time (that's how Stripe avoids double charges)
+        // Like Stripe, replay the stored response for a reused Idempotency-Key
         if (key != null && idempotency.containsKey(key)) {
             Saved saved = idempotency.get(key);
             if (!saved.fingerprint().equals(path + form)) {
@@ -222,7 +200,7 @@ public final class FakeStripe implements AutoCloseable {
         return new Object[]{200, json.writeValueAsString(refund)};
     }
 
-    /** The intent as Stripe shows it: the charge only in full when "expand[]=latest_charge" was asked for. */
+    /** Hides internal "_" fields; latest_charge is expanded only when requested via expand[]. */
     @SuppressWarnings("unchecked")
     private Map<String, Object> view(Map<String, Object> intent, boolean expandCharge) {
         Map<String, Object> out = new LinkedHashMap<>();
@@ -261,7 +239,7 @@ public final class FakeStripe implements AutoCloseable {
         exchange.close();
     }
 
-    /** For readable failure messages. */
+    /** One line per intent, for assertion failure messages. */
     public synchronized List<String> summary() {
         List<String> lines = new ArrayList<>();
         intents.values().forEach(i -> lines.add(i.get("id") + " " + i.get("status") + " " + i.get("amount") + " " + i.get("currency")));

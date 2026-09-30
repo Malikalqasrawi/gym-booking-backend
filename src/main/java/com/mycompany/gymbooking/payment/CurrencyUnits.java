@@ -5,18 +5,10 @@ import java.math.RoundingMode;
 import java.util.Locale;
 import java.util.Set;
 
-/**
- * Stripe wants amounts as whole numbers in the currency's SMALLEST unit:
- *
- *   20.00 USD  → 2000   (2 decimals: cents)
- *   20.000 JOD → 20000  (3 decimals: fils)
- *   2000 JPY   → 2000   (no decimals)
- *
- * Whole numbers avoid rounding mistakes like 0.1 + 0.2 = 0.30000000000000004.
- */
+/** Converts between decimal amounts and Stripe's integer minor units (cents, fils, ...). */
 final class CurrencyUnits {
 
-    /** Dinars and similar. Stripe also needs the last digit to be 0 (steps of 0.010). */
+    /** Stripe requires three-decimal amounts to end in 0 (multiples of 0.010). */
     private static final Set<String> THREE_DECIMALS = Set.of("BHD", "JOD", "KWD", "OMR", "TND");
 
     private static final Set<String> ZERO_DECIMALS = Set.of(
@@ -33,7 +25,7 @@ final class CurrencyUnits {
         return ZERO_DECIMALS.contains(code) ? 0 : 2;
     }
 
-    /** 20.000 JOD → 20000. Refuses amounts that don't fit exactly (instead of silently rounding money). */
+    /** Throws instead of rounding when the amount has more decimals than the currency allows. */
     static long toMinorUnits(BigDecimal amount, String currency) {
         int decimals = decimals(currency);
         long minor;
@@ -48,7 +40,6 @@ final class CurrencyUnits {
         return minor;
     }
 
-    /** 20000 JOD → 20.000 */
     static BigDecimal fromMinorUnits(long minor, String currency) {
         return BigDecimal.valueOf(minor, decimals(currency));
     }

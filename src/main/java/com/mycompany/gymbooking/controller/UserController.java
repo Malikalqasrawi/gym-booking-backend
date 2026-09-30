@@ -7,13 +7,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Endpoints about the logged-in user.
- *
- *   GET /api/users/me   (needs header  Authorization: Bearer <token>)
- *
- * @AuthenticationPrincipal gives us the user that JwtAuthenticationFilter found from the token.
- */
 @RestController
 @RequestMapping("/api/users")
 public class UserController {

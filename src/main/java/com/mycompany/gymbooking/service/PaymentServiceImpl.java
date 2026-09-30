@@ -35,13 +35,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * The payment rules.
- *
- * Golden rule: the APP never tells us "it's paid". The app only says "please check", and we ask
- * STRIPE directly (gateway.getPayment). Someone calling our API with a fake "paid!" gets nowhere.
- *
- * Every method that touches money first LOCKS the booking row, so "confirm payment", "cancel" and
- * Stripe's webhook can never run on the same booking at the same time.
+ * Stripe payments and refunds for bookings. Payment status is always read from Stripe, never taken
+ * from the client. Every operation locks the booking row first, so confirm, cancel and the webhook
+ * can't interleave on the same booking.
  */
 @Service
 public class PaymentServiceImpl implements PaymentService {
@@ -57,7 +53,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final Clock clock;
     private final long paidCancelHours;
     private final String merchantName;
-    private final StripeWebhookVerifier webhookVerifier;   // null = webhook not set up (it's optional)
+    private final StripeWebhookVerifier webhookVerifier;   // null when no webhook secret is configured
 
     public PaymentServiceImpl(BookingRepository bookingRepository,
                               PaymentRepository paymentRepository,
@@ -79,22 +75,17 @@ public class PaymentServiceImpl implements PaymentService {
         this.webhookVerifier = webhookSecret.isBlank() ? null : new StripeWebhookVerifier(webhookSecret.trim(), clock);
     }
 
-    // ==================================================================
-    // 1. START: create (or reuse) the Stripe payment, give the app its clientSecret
-    // ==================================================================
-
     /**
-     * The Stripe call happens inside the transaction, while the booking is locked. That keeps two taps
-     * on "Pay" from creating two payments. The cost: the booking stays locked for the ~0.5 s Stripe needs.
+     * Calls Stripe inside the transaction while the booking is locked, so repeated taps can't create
+     * two payments, at the cost of holding the lock for the duration of the Stripe call.
      */
     @Override
     @Transactional
     public PaymentStartResponse startPayment(Long memberId, Long bookingId) {
         LocalDateTime now = LocalDateTime.now(clock);
         Booking booking = lockedMemberBooking(memberId, bookingId);
-        booking.requirePayable(now);   // accepted, and before the pay deadline
+        booking.requirePayable(now);
 
-        // One payment per booking: pressing Pay again (e.g. after closing the payment screen) reuses it
         Payment payment = paymentRepository.findByBookingId(bookingId)
                 .orElseGet(() -> paymentRepository.save(new Payment(booking, gateway.provider(), now)));
 
@@ -128,14 +119,7 @@ public class PaymentServiceImpl implements PaymentService {
                 gatewayPayment.status() == GatewayPaymentStatus.SUCCEEDED);
     }
 
-    // ==================================================================
-    // 2. CONFIRM: the app says "I think I paid" → we ask Stripe
-    // ==================================================================
-
-    /**
-     * noRollbackFor: if the payment arrived too late we REFUND it and then report an error.
-     * The refund must still be saved, so errors we throw on purpose don't undo the transaction.
-     */
+    /** noRollbackFor so the refund of a late payment is still committed when PAID_TOO_LATE is thrown. */
     @Override
     @Transactional(noRollbackFor = ApiException.class)
     public BookingResponse confirmPayment(Long memberId, Long bookingId) {
@@ -155,13 +139,9 @@ public class PaymentServiceImpl implements PaymentService {
                         "The payment wasn't completed, so nothing was charged. You can try again.");
             }
         }
-        // Not PENDING any more = already handled (for example Stripe's webhook was faster). Nothing to do.
+        // Not PENDING means it was already settled, possibly by the webhook.
         return BookingResponse.from(booking, payment, now);
     }
-
-    // ==================================================================
-    // 3. WEBHOOK: Stripe tells us itself (works even if the app crashed right after paying)
-    // ==================================================================
 
     @Override
     @Transactional
@@ -169,7 +149,7 @@ public class PaymentServiceImpl implements PaymentService {
         if (webhookVerifier == null) {
             throw new NotFoundException("WEBHOOK_NOT_CONFIGURED", "The Stripe webhook isn't set up on this server.");
         }
-        webhookVerifier.verify(payload, signatureHeader);   // 400 unless it really comes from Stripe
+        webhookVerifier.verify(payload, signatureHeader);
 
         JsonNode event;
         try {
@@ -179,7 +159,7 @@ public class PaymentServiceImpl implements PaymentService {
         }
         String type = event.path("type").asText();
         if (!type.equals("payment_intent.succeeded")) {
-            log.debug("Ignoring Stripe event {}", type);   // we only need this one
+            log.debug("Ignoring Stripe event {}", type);
             return;
         }
 
@@ -194,10 +174,10 @@ public class PaymentServiceImpl implements PaymentService {
         Booking booking = bookingRepository.findLockedById(bookingId.get()).orElseThrow();
         Payment payment = paymentRepository.findByBookingId(booking.getId()).orElseThrow();
         if (payment.getStatus() != PaymentStatus.PENDING) {
-            return;   // the app's "confirm" was faster
+            return;   // already settled by confirmPayment
         }
 
-        // Don't just trust the message's contents: ask Stripe (this also gives us the card details)
+        // Re-fetch from Stripe rather than trusting the event body; this also provides the card details.
         GatewayPayment gatewayPayment = gateway.getPayment(providerPaymentId);
         if (gatewayPayment.status() != GatewayPaymentStatus.SUCCEEDED) {
             return;
@@ -205,14 +185,10 @@ public class PaymentServiceImpl implements PaymentService {
         try {
             settle(booking, payment, gatewayPayment, now);
         } catch (ConflictException e) {
-            // e.g. paid too late → already refunded. Answer 200 anyway, or Stripe keeps re-sending.
+            // Late payment (already refunded) or amount mismatch; return 200 so Stripe doesn't keep retrying.
             log.warn("Stripe webhook for booking {}: {}", booking.getId(), e.getMessage());
         }
     }
-
-    // ==================================================================
-    // 4. REFUND when a member cancels a paid booking in time
-    // ==================================================================
 
     @Override
     @Transactional
@@ -228,13 +204,8 @@ public class PaymentServiceImpl implements PaymentService {
         return payment;
     }
 
-    // ==================================================================
-    // Helpers
-    // ==================================================================
-
-    /** Stripe says the money arrived: record it, and confirm the booking (or refund if it's too late). */
+    /** Records a succeeded payment and marks the booking PAID, or refunds it if the booking is no longer payable. */
     private void settle(Booking booking, Payment payment, GatewayPayment gatewayPayment, LocalDateTime now) {
-        // Paranoid check: Stripe must have charged exactly our price
         if (gatewayPayment.amount().compareTo(payment.getAmount()) != 0
                 || !gatewayPayment.currency().equalsIgnoreCase(payment.getCurrency())) {
             log.error("Payment {} doesn't match: Stripe charged {} {}, the booking costs {} {}", payment.getId(),
@@ -245,14 +216,14 @@ public class PaymentServiceImpl implements PaymentService {
 
         if (booking.canBePaidAt(now)) {
             booking.markPaid(now, refundableUntil(booking));
-            events.publishEvent(paidEvent(booking, payment));   // emails go out AFTER the save (PaymentEmailListener)
+            events.publishEvent(paidEvent(booking, payment));   // emails are sent after commit
             log.info("Booking {} paid: {} {} with {}", booking.getId(), payment.getAmount(), payment.getCurrency(),
                     payment.getMethodLabel());
             return;
         }
 
-        // The booking expired (or was cancelled) while the payment screen was still open → give it all back
-        booking.expireIfOverdue(now);   // save EXPIRED now, so the clean-up job doesn't send "nothing was charged"
+        // The booking expired or was cancelled before the payment arrived: refund in full.
+        booking.expireIfOverdue(now);   // persist EXPIRED so the expiry job doesn't send "nothing was charged"
         String status = booking.statusAt(now).name().toLowerCase();
         GatewayRefund refund = gateway.refund(payment.getProviderPaymentId(), idempotencyKey("refund", payment));
         payment.markRefunded(refund.id(), now);
@@ -263,14 +234,13 @@ public class PaymentServiceImpl implements PaymentService {
                         + " when the payment arrived, so the full amount was refunded.");
     }
 
-    /** A paid session can be cancelled (with a refund) until 24 h before it starts. */
     private LocalDateTime refundableUntil(Booking booking) {
         return booking.getStartsAt().minusHours(paidCancelHours);
     }
 
     /**
-     * Stripe remembers idempotency keys for 24 h. The payment's creation time is part of the key, so after
-     * a DROP DATABASE (ids start at 1 again) "payment 1" never reuses an old key from before.
+     * Includes the payment's creation time because Stripe keeps keys for 24 hours and payment ids
+     * restart when the database is recreated, so a reused id must not collide with an old key.
      */
     private static String idempotencyKey(String action, Payment payment) {
         return "gym-" + action + "-" + payment.getId() + "-" + payment.getCreatedAt().format(KEY_TIME);

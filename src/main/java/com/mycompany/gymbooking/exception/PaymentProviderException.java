@@ -2,10 +2,7 @@ package com.mycompany.gymbooking.exception;
 
 import org.springframework.http.HttpStatus;
 
-/**
- * 502 Bad Gateway: WE are fine, but the payment provider (Stripe) refused or didn't answer.
- * Example: wrong Stripe key, Stripe unreachable, an amount Stripe doesn't accept.
- */
+/** The payment provider rejected the request or could not be reached. */
 public class PaymentProviderException extends ApiException {
 
     public PaymentProviderException(String message) {

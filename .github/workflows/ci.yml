@@ -1,8 +1,3 @@
-# Runs on GitHub's computers after every push to main and on every Pull Request.
-# Two jobs:
-#   1. test   – compiles the code and runs all JUnit tests (unit + API tests)
-#   2. docker – builds the Docker image and starts MySQL + the API with docker compose,
-#               then checks that /api/health answers (proves the one-command setup works)
 name: CI
 
 on:

@@ -19,39 +19,32 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * The money for one booking (table "payments").
- *
- * What we store: the amount, Stripe's id for the payment ("pi_..."), and the card BRAND and LAST 4 DIGITS
- * for the receipt. What we never store (or even see): the card number, expiry date or CVC. Those go from
- * the phone straight to Stripe, which is what keeps our server out of card-data rules (PCI).
- *
- * ENCAPSULATION like Booking: no setters, only markSucceeded() and markRefunded(), which check the order.
+ * Payment for a booking. Only the card brand and last four digits are stored; card details go
+ * directly from the client to Stripe, which keeps the server out of PCI scope.
  */
 @Entity
 @Table(name = "payments")
 public class Payment {
 
-    /** Every price in this app is in Jordanian dinars. */
     public static final String CURRENCY = "JOD";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** unique = true: a booking can have only ONE payment, so it can't be charged twice. */
+    /** Unique so a booking can never be charged twice. */
     @OneToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "booking_id", nullable = false, unique = true)
     private Booking booking;
 
-    /** Who handles the money: "stripe". */
     @Column(nullable = false, length = 20)
     private String provider;
 
-    /** Stripe's id for this payment, e.g. "pi_3Q1x...". Search for it in the Stripe Dashboard. */
+    /** Stripe PaymentIntent id. */
     @Column(length = 100, unique = true)
     private String providerPaymentId;
 
-    /** Copied from the booking when the payment starts. 3 decimals: 1 JOD = 1000 fils. */
+    /** Copied from the booking. Scale 3 because 1 JOD = 1000 fils. */
     @Column(nullable = false, precision = 8, scale = 3)
     private BigDecimal amount;
 
@@ -59,15 +52,13 @@ public class Payment {
     private String currency;
 
     @Enumerated(EnumType.STRING)
-    @JdbcTypeCode(SqlTypes.VARCHAR)   // plain text column, see Booking.status
+    @JdbcTypeCode(SqlTypes.VARCHAR)   // see Booking.status
     @Column(nullable = false, length = 20)
     private PaymentStatus status;
 
-    /** "visa", "mastercard"... (from Stripe, after paying) */
     @Column(length = 20)
     private String cardBrand;
 
-    /** "4242" (from Stripe, after paying) */
     @Column(length = 4)
     private String cardLast4;
 
@@ -76,7 +67,6 @@ public class Payment {
 
     private LocalDateTime paidAt;
 
-    /** Stripe's id for the refund, e.g. "re_3Q1x..." */
     @Column(length = 100)
     private String providerRefundId;
 
@@ -85,7 +75,6 @@ public class Payment {
     @Version
     private Long version;
 
-    /** Needed by JPA. */
     protected Payment() {
     }
 
@@ -98,7 +87,6 @@ public class Payment {
         this.createdAt = now;
     }
 
-    /** Remember Stripe's id right after Stripe created the payment. */
     public void attachProviderPayment(String providerPaymentId) {
         if (this.providerPaymentId != null) {
             throw new IllegalStateException("Payment " + id + " already has a Stripe payment");
@@ -125,7 +113,7 @@ public class Payment {
         this.refundedAt = now;
     }
 
-    /** "Visa •••• 4242", or "Card" if Stripe didn't tell us the details. */
+    /** Card brand and last four digits for display, or "Card" if Stripe didn't return them. */
     public String getMethodLabel() {
         if (cardBrand == null || cardLast4 == null) {
             return "Card";
@@ -140,8 +128,6 @@ public class Payment {
         };
         return brand + " •••• " + cardLast4;
     }
-
-    // ---- Getters ----
 
     public Long getId() {
         return id;

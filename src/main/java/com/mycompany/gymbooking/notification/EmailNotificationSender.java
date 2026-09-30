@@ -6,10 +6,7 @@ import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Component;
 
-/**
- * Real email version, using the spring.mail.* settings (e.g. Gmail SMTP).
- * Active only when app.notifications.mode=email.
- */
+/** Sends notifications as email over SMTP using the spring.mail.* settings. */
 @Component
 @ConditionalOnProperty(name = "app.notifications.mode", havingValue = "email")
 public class EmailNotificationSender implements NotificationSender {

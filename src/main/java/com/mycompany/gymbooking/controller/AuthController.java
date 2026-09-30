@@ -15,15 +15,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * The "waiter" for authentication: receives HTTP requests, passes them to AuthService,
- * and returns the result as JSON. No business rules here, those live in the service.
- *
- *   POST /api/auth/signup        → 201 { "message": "..." }
- *   POST /api/auth/verify        → 200 { "token": "...", "user": {...} }
- *   POST /api/auth/resend-code   → 200 { "message": "..." }
- *   POST /api/auth/login         → 200 { "token": "...", "user": {...} }
- */
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {

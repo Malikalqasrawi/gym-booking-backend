@@ -9,19 +9,6 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.time.LocalTime;
 
-/**
- * The JSON the admin sends to CREATE (POST) or UPDATE (PUT) a branch:
- * {
- *   "name": "Abdoun Branch",
- *   "address": "Abdoun Circle, Cairo St. 12",
- *   "city": "Amman",
- *   "latitude": 31.9454,
- *   "longitude": 35.8818,
- *   "phone": "+96265000001",
- *   "openingTime": "06:00",
- *   "closingTime": "23:00"
- * }
- */
 public record BranchRequest(
 
         @NotBlank(message = "Name is required")

@@ -6,10 +6,7 @@ import com.mycompany.gymbooking.model.PaymentStatus;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-/**
- * The receipt part of a booking: { "status": "SUCCEEDED", "amount": 20.000, "method": "Visa •••• 4242", ... }
- * Only for the member who paid (trainers see the booking status PAID, not the card).
- */
+/** Payment details, shown only to the member who paid. */
 public record PaymentInfo(
         PaymentStatus status,
         BigDecimal amount,
@@ -19,7 +16,7 @@ public record PaymentInfo(
         @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm") LocalDateTime refundedAt
 ) {
 
-    /** null while nothing was paid yet (a PENDING payment is not interesting for the app). */
+    /** Returns null for a missing or still PENDING payment. */
     public static PaymentInfo from(Payment payment) {
         if (payment == null || payment.getStatus() == PaymentStatus.PENDING) {
             return null;

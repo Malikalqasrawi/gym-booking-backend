@@ -25,21 +25,17 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * One session request / booking: a member, a trainer, a date and a time.
- *
- * ENCAPSULATION: there is no setStatus(). The status only changes through accept(), reject(),
- * markPaid(), cancelByMember() and expireIfOverdue(), and each of them checks the rules first.
- * So nobody can, for example, accept a request that was already cancelled, or pay for an expired one.
+ * A session request from a member to a trainer. Status changes only go through the transition
+ * methods, which enforce the booking rules.
  */
 @Entity
 @Table(name = "bookings", indexes = {
-        // Speeds up "which bookings does this trainer have on this day?" (asked for every availability check)
+        // Queried on every availability check
         @Index(name = "idx_bookings_trainer_date", columnList = "trainer_id, session_date"),
         @Index(name = "idx_bookings_member_date", columnList = "member_id, session_date")
 })
 public class Booking {
 
-    /** These statuses keep the time slot taken, so nobody else can book it. */
     public static final Set<BookingStatus> SLOT_HOLDING =
             EnumSet.of(BookingStatus.REQUESTED, BookingStatus.ACCEPTED, BookingStatus.PAID);
 
@@ -47,7 +43,6 @@ public class Booking {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // Three RELATIONSHIPS → three foreign-key columns: member_id, trainer_id, branch_id
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "member_id")
     private Member member;
@@ -56,7 +51,7 @@ public class Booking {
     @JoinColumn(name = "trainer_id")
     private Trainer trainer;
 
-    /** Copied from the trainer when booked, so a later move to another branch doesn't change old bookings. */
+    /** Copied from the trainer at booking time so a later branch transfer doesn't affect past bookings. */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "branch_id")
     private Branch branch;
@@ -73,15 +68,11 @@ public class Booking {
     @Column(nullable = false)
     private int durationMinutes;
 
-    /** The price when the request was made (so changing the trainer's rate later doesn't change it). */
+    /** Trainer's rate at request time, so later rate changes don't affect this booking. */
     @Column(nullable = false, precision = 8, scale = 3)
     private BigDecimal price;
 
-    /**
-     * @JdbcTypeCode(VARCHAR): store it as plain text. Without it, Hibernate makes a MySQL
-     * enum('ACCEPTED', ...) column, and a new status (like PAID) would be refused by MySQL.
-     * (SchemaUpgrades changes the old enum column of existing databases.)
-     */
+    /** Stored as VARCHAR so adding a status doesn't require altering a MySQL ENUM column. */
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(nullable = false, length = 20)
@@ -96,29 +87,23 @@ public class Booking {
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
-    /** The trainer must answer before this moment, otherwise the request counts as EXPIRED. */
+    /** Trainer's answer deadline; an unanswered request expires after it. */
     @Column(nullable = false)
     private LocalDateTime respondByAt;
 
     private LocalDateTime respondedAt;
 
-    /** ACCEPTED: the member must pay before this moment, otherwise the booking counts as EXPIRED. */
+    /** Payment deadline for an accepted booking; an unpaid booking expires after it. */
     private LocalDateTime payByAt;
 
-    /** PAID: the last moment the member can still cancel (and get the money back). */
+    /** Last moment a paid booking can be cancelled with a refund. */
     private LocalDateTime refundableUntil;
 
     private LocalDateTime cancelledAt;
 
-    /**
-     * OPTIMISTIC LOCKING: Hibernate adds 1 to this number on every update, and only saves if the number
-     * is still what it read. If the trainer accepts while the member cancels at the same second,
-     * the second save fails instead of silently overwriting the first one.
-     */
     @Version
     private Long version;
 
-    /** Needed by JPA. */
     protected Booking() {
     }
 
@@ -138,39 +123,30 @@ public class Booking {
         this.respondByAt = respondByAt;
     }
 
-    // ----------------------------------------------------------------
-    // Questions about the booking
-    // ----------------------------------------------------------------
-
     /**
-     * The status as it really is at `now`.
-     * A request nobody answered in time counts as EXPIRED right away, even before the
-     * clean-up job (BookingExpiryJob) writes EXPIRED into the database.
+     * Effective status at {@code now}. Overdue bookings are reported as EXPIRED before
+     * BookingExpiryJob persists the change.
      */
     public BookingStatus statusAt(LocalDateTime now) {
         if (status == BookingStatus.REQUESTED && !now.isBefore(respondByAt)) {
-            return BookingStatus.EXPIRED;   // the trainer didn't answer in time
+            return BookingStatus.EXPIRED;
         }
         if (status == BookingStatus.ACCEPTED && !now.isBefore(payDeadline())) {
-            return BookingStatus.EXPIRED;   // the member didn't pay in time
+            return BookingStatus.EXPIRED;
         }
         return status;
     }
 
-    /**
-     * When an ACCEPTED booking must be paid. Bookings accepted before Stage 4 have no payByAt:
-     * they can be paid until the session starts.
-     */
+    /** Payment deadline. Bookings accepted before payByAt existed can be paid until the session starts. */
     public LocalDateTime payDeadline() {
         return payByAt != null ? payByAt : getStartsAt();
     }
 
-    /** Does this booking still keep its time slot taken? */
     public boolean holdsSlotAt(LocalDateTime now) {
         return SLOT_HOLDING.contains(statusAt(now));
     }
 
-    /** Do [start, end) and this booking's time share at least one minute? 10:00–11:00 and 10:30–11:30 → yes. */
+    /** True if the half-open range [otherStart, otherEnd) overlaps this booking. */
     public boolean overlaps(LocalTime otherStart, LocalTime otherEnd) {
         return startTime.isBefore(otherEnd) && otherStart.isBefore(endTime);
     }
@@ -183,15 +159,13 @@ public class Booking {
         return LocalDateTime.of(date, endTime);
     }
 
-    /** The app shows a Pay button only when this is true. */
     public boolean canBePaidAt(LocalDateTime now) {
-        return statusAt(now) == BookingStatus.ACCEPTED;   // ACCEPTED already means "before the pay deadline"
+        return statusAt(now) == BookingStatus.ACCEPTED;   // past the pay deadline statusAt() returns EXPIRED
     }
 
     /**
-     * The last moment the member can cancel, or null if it can't be cancelled at all.
-     *   waiting / accepted (not paid) → until the session starts
-     *   paid                          → until refundableUntil (24 h before the start)
+     * Last moment the member can cancel (the session start, or refundableUntil once paid),
+     * or null if the booking can't be cancelled.
      */
     public LocalDateTime cancelDeadline(LocalDateTime now) {
         return switch (statusAt(now)) {
@@ -201,17 +175,11 @@ public class Booking {
         };
     }
 
-    /** The app shows a Cancel button only when this is true. */
     public boolean canBeCancelledAt(LocalDateTime now) {
         LocalDateTime deadline = cancelDeadline(now);
         return deadline != null && now.isBefore(deadline);
     }
 
-    // ----------------------------------------------------------------
-    // Actions (each one checks the rules before changing anything)
-    // ----------------------------------------------------------------
-
-    /** @param payBy the member must pay before this moment (12 h from now, or the session start if sooner) */
     public void accept(String reply, LocalDateTime now, LocalDateTime payBy) {
         requirePending(now);
         this.status = BookingStatus.ACCEPTED;
@@ -244,11 +212,10 @@ public class Booking {
         this.cancelledAt = now;
     }
 
-    /** Throws a clear error if this booking can't be paid right now. */
     public void requirePayable(LocalDateTime now) {
         BookingStatus current = statusAt(now);
         switch (current) {
-            case ACCEPTED -> { }   // OK
+            case ACCEPTED -> { }
             case REQUESTED -> throw new ConflictException("NOT_ACCEPTED_YET", "The trainer hasn't accepted this request yet.");
             case PAID -> throw new ConflictException("ALREADY_PAID", "This session is already paid.");
             case EXPIRED -> throw new ConflictException("BOOKING_EXPIRED",
@@ -257,20 +224,13 @@ public class Booking {
         }
     }
 
-    /**
-     * The money arrived: the session is confirmed.
-     * @param refundableUntil the member may cancel (with a refund) until this moment
-     */
     public void markPaid(LocalDateTime now, LocalDateTime refundableUntil) {
         requirePayable(now);
         this.status = BookingStatus.PAID;
         this.refundableUntil = refundableUntil;
     }
 
-    /**
-     * Used by the clean-up job. Returns true if this booking just became EXPIRED:
-     * a request the trainer didn't answer in time, or an accepted booking that wasn't paid in time.
-     */
+    /** Marks an overdue request or unpaid booking as EXPIRED. Returns true if the status changed. */
     public boolean expireIfOverdue(LocalDateTime now) {
         boolean waiting = status == BookingStatus.REQUESTED || status == BookingStatus.ACCEPTED;
         if (waiting && statusAt(now) == BookingStatus.EXPIRED) {
@@ -291,17 +251,12 @@ public class Booking {
     }
 
     private static String label(BookingStatus status) {
-        return status.name().toLowerCase();   // ACCEPTED → "accepted"
+        return status.name().toLowerCase();
     }
 
-    /** "  " → null, " hi " → "hi" */
     private static String clean(String text) {
         return text == null || text.isBlank() ? null : text.trim();
     }
-
-    // ----------------------------------------------------------------
-    // Getters (no setters on purpose)
-    // ----------------------------------------------------------------
 
     public Long getId() {
         return id;

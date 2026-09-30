@@ -14,12 +14,7 @@ import java.time.LocalTime;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/**
- * The booking rules (the state machine in Booking.java), tested without Spring or a database:
- * we create plain Java objects and move a fake "now" forward.
- *
- * Story used by every test: the session is on Wed 7 Oct 2026, 10:00–11:00, requested on Thu 1 Oct at 09:00.
- */
+/** Booking state machine rules, evaluated at explicit points in time rather than the system clock. */
 class BookingTest {
 
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 10, 1, 9, 0);
@@ -37,13 +32,13 @@ class BookingTest {
         return trainer;
     }
 
-    /** A new request; the trainer has 24 h to answer. */
+    /** Requested at NOW with a 24 h answer deadline. */
     private Booking newRequest() {
         return new Booking(member, trainer, SESSION_DAY, LocalTime.of(10, 0), 60,
                 trainer.priceFor(60), "First session", NOW, NOW.plusHours(24));
     }
 
-    /** Accepted at NOW, must be paid within 12 h. */
+    /** Accepted at NOW with a 12 h pay deadline. */
     private Booking acceptedBooking() {
         Booking booking = newRequest();
         booking.accept("See you!", NOW, NOW.plusHours(12));
@@ -60,8 +55,6 @@ class BookingTest {
         return assertThrows(ConflictException.class, action::run).getCode();
     }
 
-    // ---- Prices ----
-
     @Test
     @DisplayName("price = hourly rate × duration (20 JOD/h)")
     void priceFollowsTheHourlyRate() {
@@ -70,8 +63,6 @@ class BookingTest {
         assertEquals(new BigDecimal("20.000"), trainer.priceFor(60));
         assertEquals(new BigDecimal("30.000"), trainer.priceFor(90));
     }
-
-    // ---- Requests ----
 
     @Test
     @DisplayName("a new request waits for the trainer and keeps the time taken")
@@ -102,8 +93,6 @@ class BookingTest {
         assertEquals("BOOKING_NOT_PENDING", codeOf(() -> booking.reject(null, NOW)));
     }
 
-    // ---- Paying ----
-
     @Test
     @DisplayName("accepted: can be paid until the pay deadline, then EXPIRED")
     void acceptedBookingMustBePaidInTime() {
@@ -123,11 +112,9 @@ class BookingTest {
         assertEquals(BookingStatus.PAID, booking.statusAt(NOW.plusHours(2)));
         assertTrue(booking.holdsSlotAt(NOW.plusHours(2)));
         assertEquals("ALREADY_PAID", codeOf(() -> booking.requirePayable(NOW.plusHours(2))));
-        // PAID never expires, even after the old pay deadline
+        // PAID does not expire when the original pay deadline passes
         assertEquals(BookingStatus.PAID, booking.statusAt(NOW.plusHours(20)));
     }
-
-    // ---- Cancelling ----
 
     @Test
     @DisplayName("not paid yet: can be cancelled until the session starts")
@@ -164,14 +151,12 @@ class BookingTest {
     @Test
     @DisplayName("nothing can be cancelled once the session has started")
     void cannotCancelStartedSession() {
-        // (a request whose answer deadline is after the start, so it's still "waiting" at 10:00)
+        // Answer deadline after the start, so the request is still pending when the session begins
         Booking request = new Booking(member, trainer, SESSION_DAY, LocalTime.of(10, 0), 60,
                 trainer.priceFor(60), null, NOW, SESSION_START.plusHours(1));
         assertFalse(request.canBeCancelledAt(SESSION_START));
         assertEquals("SESSION_STARTED", codeOf(() -> request.cancelByMember(SESSION_START)));
     }
-
-    // ---- Clean-up job ----
 
     @Test
     @DisplayName("expireIfOverdue changes only overdue requests / unpaid bookings")

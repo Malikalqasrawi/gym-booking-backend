@@ -38,16 +38,9 @@ import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * API tests: the WHOLE backend starts (Spring, security, JPA, the booking and payment rules),
- * and the tests call it over real HTTP, exactly like the Flutter app does.
- *
- * Replaced for the test only:
- *   - MySQL  → H2, an in-memory database (empty at every run, gone afterwards)
- *   - Stripe → FakeStripe (a local pretend Stripe we control)
- *   - email  → CapturingNotificationSender (keeps the emails in a list)
- *
- * The backend starts once for the whole class. Each test uses its own members and time slots,
- * so the tests don't depend on each other.
+ * End-to-end tests over HTTP against the full application, with in-memory H2 instead of MySQL,
+ * FakeStripe instead of Stripe and CapturingNotificationSender instead of email. The application
+ * starts once per class, so each test uses its own members and time slots to stay independent.
  */
 class GymBookingApiTest {
 
@@ -62,12 +55,11 @@ class GymBookingApiTest {
     private static ConfigurableApplicationContext backend;
     private static String baseUrl;
 
-    // Looked up once
     private static long sara;
     private static long lina;
     private static String saraToken;
     private static String linaToken;
-    /** Next Wednesday: Sara works 08:00–16:00, Lina 07:00–13:00 and 17:00–21:00. */
+    /** Next Wednesday. Seeded schedules: Sara 08:00-16:00, Lina 07:00-13:00 and 17:00-21:00. */
     private static LocalDate wednesday;
 
     private record Reply(int status, JsonNode body) {
@@ -76,25 +68,20 @@ class GymBookingApiTest {
         }
     }
 
-    // ==================================================================
-    // Start / stop the backend
-    // ==================================================================
-
     @BeforeAll
     static void startBackend() throws Exception {
         stripe = FakeStripe.start();
         mailbox = new CapturingNotificationSender();
 
-        // A random JWT secret for this run only (never written anywhere)
         byte[] jwtSecret = new byte[64];
         new SecureRandom().nextBytes(jwtSecret);
 
         backend = new SpringApplicationBuilder(Gymbooking.class)
-                // Our pretend mailbox becomes THE NotificationSender (notifications mode "test" turns off the others)
+                // Notifications mode "test" disables the real senders, leaving only the capturing one
                 .initializers(context -> ((GenericApplicationContext) context)
                         .registerBean(NotificationSender.class, () -> mailbox))
                 .run(
-                        "--server.port=0",   // any free port
+                        "--server.port=0",
                         "--spring.datasource.url=jdbc:h2:mem:api-test;MODE=MySQL;DB_CLOSE_DELAY=-1",
                         "--spring.datasource.username=sa",
                         "--spring.datasource.password=",
@@ -131,10 +118,6 @@ class GymBookingApiTest {
             stripe.close();
         }
     }
-
-    // ==================================================================
-    // Accounts and security
-    // ==================================================================
 
     @Test
     @DisplayName("health check is public")
@@ -199,10 +182,6 @@ class GymBookingApiTest {
         assertEquals(415, response.statusCode());
     }
 
-    // ==================================================================
-    // Booking rules
-    // ==================================================================
-
     @Test
     @DisplayName("two members can't book the same time: the second gets 409 SLOT_NOT_AVAILABLE")
     void noDoubleBooking() throws Exception {
@@ -211,10 +190,6 @@ class GymBookingApiTest {
         assertEquals(409, second.status());
         assertEquals("SLOT_NOT_AVAILABLE", second.code());
     }
-
-    // ==================================================================
-    // Payments
-    // ==================================================================
 
     @Test
     @DisplayName("pay flow: request → accept → pay with Stripe → PAID + receipt email → cancel → refund")
@@ -228,7 +203,6 @@ class GymBookingApiTest {
         assertEquals("ACCEPTED", accepted.body().path("status").asText());
         assertFalse(accepted.body().path("payBy").isNull(), "accepting sets a pay deadline");
 
-        // 1. Start: the backend creates a Stripe payment for 20 JOD
         Reply start = call("POST", "/api/bookings/" + id + "/payment", member, null);
         assertEquals(200, start.status(), start.body().toString());
         assertEquals("pk_test_fake", start.body().path("publishableKey").asText());
@@ -236,10 +210,8 @@ class GymBookingApiTest {
         String paymentIntent = paymentIntentOf(start);
         assertEquals("20000", stripe.intent(paymentIntent).get("amount").toString(), "20 JOD = 20000 fils");
 
-        // 2. Asking to confirm before paying → nothing happens
         assertEquals("PAYMENT_NOT_COMPLETED", call("POST", "/api/bookings/" + id + "/payment/confirm", member, null).code());
 
-        // 3. The member pays in Stripe's screen, then the app confirms
         stripe.pay(paymentIntent, "visa", "4242");
         Reply paid = call("POST", "/api/bookings/" + id + "/payment/confirm", member, null);
         assertEquals(200, paid.status(), paid.body().toString());
@@ -251,12 +223,10 @@ class GymBookingApiTest {
         assertEquals(1, mailbox.count(email, "Booking confirmed"), "exactly one receipt");
         assertEquals(1, mailbox.count("sara.trainer@gym.com", "Session confirmed"));
 
-        // Confirming again changes nothing (and sends no second email)
         assertEquals("PAID", call("POST", "/api/bookings/" + id + "/payment/confirm", member, null).body().path("status").asText());
         assertEquals(1, mailbox.count(email, "Booking confirmed"));
         assertEquals("ALREADY_PAID", call("POST", "/api/bookings/" + id + "/payment", member, null).code());
 
-        // 4. Cancel → full refund at Stripe
         Reply cancelled = call("POST", "/api/bookings/" + id + "/cancel", member, null);
         assertEquals("CANCELLED", cancelled.body().path("status").asText());
         assertEquals("REFUNDED", cancelled.body().path("payment").path("status").asText());
@@ -277,7 +247,7 @@ class GymBookingApiTest {
         assertEquals("PAYMENT_PROCESSING", call("POST", "/api/bookings/" + id + "/payment/confirm", member, null).code());
         assertEquals("ACCEPTED", call("GET", "/api/bookings/" + id, member, null).body().path("status").asText());
 
-        // Pressing Pay again reuses the same Stripe payment (no second charge possible)
+        // Starting payment again must reuse the existing PaymentIntent
         int before = stripe.paymentIntentCount();
         call("POST", "/api/bookings/" + id + "/payment", member, null);
         assertEquals(before, stripe.paymentIntentCount());
@@ -303,7 +273,7 @@ class GymBookingApiTest {
         assertEquals("PAID", booking.path("status").asText());
         assertEquals("Mastercard •••• 4444", booking.path("payment").path("method").asText());
 
-        // Stripe may send the same message twice: still one receipt
+        // Stripe can deliver the same event more than once
         assertEquals(200, webhook(event, "t=" + now + ",v1=" + sign(WEBHOOK_SECRET, now, event)).status());
         assertEquals(1, mailbox.count(memberEmail(member), "Booking confirmed"));
     }
@@ -331,13 +301,13 @@ class GymBookingApiTest {
         long id = acceptedBooking(member, sara, "12:00");
         String paymentIntent = paymentIntentOf(call("POST", "/api/bookings/" + id + "/payment", member, null));
 
-        // The 12 hours pass...
+        // Move the pay deadline into the past
         jdbc().update("UPDATE bookings SET pay_by_at = ? WHERE id = ?",
                 Timestamp.valueOf(LocalDateTime.now(AMMAN).minusMinutes(1)), id);
         assertEquals("EXPIRED", call("GET", "/api/bookings/" + id, member, null).body().path("status").asText());
         assertEquals("BOOKING_EXPIRED", call("POST", "/api/bookings/" + id + "/payment", member, null).code());
 
-        // ...but the member still pays in the screen that was open
+        // The member completes the payment sheet that was already open
         stripe.pay(paymentIntent, "visa", "4242");
         Reply confirm = call("POST", "/api/bookings/" + id + "/payment/confirm", member, null);
         assertEquals("PAID_TOO_LATE", confirm.code());
@@ -351,7 +321,7 @@ class GymBookingApiTest {
         String member = newMember();
         long id = paidBooking(member, sara, "13:00");
 
-        // Move the session to 3 hours from now (as if the days had passed)
+        // Move the session to 3 hours from now, inside the 24 h cancellation cutoff
         LocalDateTime soon = LocalDateTime.now(AMMAN).plusHours(3).withSecond(0).withNano(0);
         jdbc().update("UPDATE bookings SET session_date = ?, start_time = ?, end_time = ?, refundable_until = ? WHERE id = ?",
                 java.sql.Date.valueOf(soon.toLocalDate()), java.sql.Time.valueOf(soon.toLocalTime()),
@@ -362,10 +332,6 @@ class GymBookingApiTest {
         assertEquals(409, cancel.status());
         assertEquals("TOO_LATE_TO_CANCEL", cancel.code());
     }
-
-    // ==================================================================
-    // Helpers
-    // ==================================================================
 
     private static Reply call(String method, String path, String token, Object body) throws Exception {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + path))
@@ -459,7 +425,7 @@ class GymBookingApiTest {
         return id;
     }
 
-    /** "pi_test3_secret_test" → "pi_test3" */
+    /** Extracts the PaymentIntent id, the part of the client secret before "_secret_". */
     private static String paymentIntentOf(Reply start) {
         String clientSecret = start.body().path("clientSecret").asText();
         assertNotNull(clientSecret);

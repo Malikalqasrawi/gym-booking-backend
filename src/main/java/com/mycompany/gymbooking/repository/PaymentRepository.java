@@ -12,13 +12,9 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
 
     Optional<Payment> findByBookingId(Long bookingId);
 
-    /** The payments of many bookings in ONE query (for "My bookings"), instead of one query per booking. */
     List<Payment> findByBookingIdIn(Collection<Long> bookingIds);
 
-    /**
-     * Only the booking id, for Stripe's messages ("payment pi_123 succeeded").
-     * We then LOCK that booking and load the payment fresh, so we never act on an old copy.
-     */
+    /** Returns only the booking id so the caller can lock the booking before loading the payment. */
     @Query("select p.booking.id from Payment p where p.providerPaymentId = :providerPaymentId")
     Optional<Long> findBookingIdByProviderPaymentId(@Param("providerPaymentId") String providerPaymentId);
 }

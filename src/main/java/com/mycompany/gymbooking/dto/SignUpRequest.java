@@ -5,15 +5,6 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
-/**
- * DTO = "Data Transfer Object": the shape of the JSON the app sends us.
- *
- * A "record" is a short way to write a class whose only job is to hold data.
- * Java writes the constructor and getters for us: request.email(), request.password()...
- *
- * The annotations are validation rules. If one fails, Spring rejects the request
- * with 400 Bad Request before our code even runs.
- */
 public record SignUpRequest(
 
         @NotBlank(message = "Full name is required")

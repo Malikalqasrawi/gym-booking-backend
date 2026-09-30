@@ -5,7 +5,6 @@ import com.mycompany.gymbooking.model.WorkingHours;
 import java.time.DayOfWeek;
 import java.time.LocalTime;
 
-/** One block of a trainer's week: { "dayOfWeek": "SUNDAY", "startTime": "08:00", "endTime": "16:00" } */
 public record WorkingHoursResponse(
         DayOfWeek dayOfWeek,
         @JsonFormat(pattern = "HH:mm") LocalTime startTime,

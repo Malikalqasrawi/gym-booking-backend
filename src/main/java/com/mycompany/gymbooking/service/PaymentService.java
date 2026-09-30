@@ -7,13 +7,9 @@ import com.mycompany.gymbooking.model.Payment;
 import java.time.LocalDateTime;
 
 /**
- * Paying for an accepted booking, and refunds.
- *
- * The flow:
- *   1. startPayment    → the app gets a clientSecret and opens Stripe's payment screen
- *   2. (the member types the card into STRIPE's screen; our server never sees the card)
- *   3. confirmPayment  → we ask Stripe "did it succeed?" and mark the booking PAID
- *      (Stripe can also tell us itself: handleStripeWebhook. Whichever comes first wins; the other does nothing.)
+ * Stripe payments for accepted bookings, and refunds. The client pays through Stripe's own UI with
+ * the client secret from startPayment; the booking is then marked PAID by either confirmPayment or
+ * the webhook, whichever arrives first. The other call is a no-op.
  */
 public interface PaymentService {
 
@@ -21,9 +17,8 @@ public interface PaymentService {
 
     BookingResponse confirmPayment(Long memberId, Long bookingId);
 
-    /** Stripe's own "payment succeeded" message (only if the webhook is set up). */
     void handleStripeWebhook(String payload, String signatureHeader);
 
-    /** Called by BookingService when a member cancels a PAID booking in time. Returns the refunded payment. */
+    /** Refunds a PAID booking the member cancelled within the refund window. Returns the refunded payment. */
     Payment refundCancelledBooking(Booking booking, LocalDateTime now);
 }

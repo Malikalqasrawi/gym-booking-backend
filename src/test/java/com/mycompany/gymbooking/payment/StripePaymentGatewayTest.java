@@ -17,10 +17,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.client.RestClient;
 
-/**
- * StripePaymentGateway against FakeStripe: checks the exact HTTP requests we send to Stripe
- * and how we read Stripe's answers, including errors.
- */
+/** StripePaymentGateway against FakeStripe: outgoing request format and response/error handling. */
 class StripePaymentGatewayTest {
 
     private static FakeStripe stripe;

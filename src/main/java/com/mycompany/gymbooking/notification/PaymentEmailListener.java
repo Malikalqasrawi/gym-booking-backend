@@ -12,13 +12,8 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 /**
- * Sends the payment emails (confirmation / receipt, refund).
- *
- * @TransactionalEventListener(AFTER_COMMIT): the email goes out only AFTER the payment is safely saved
- * in MySQL. If saving failed, there's no "you paid" email for a booking that isn't actually PAID.
- *
- * PaymentServiceImpl doesn't know this class exists: it just announces "booking 58 was paid" (an event).
- * Adding an SMS or a push notification later = one more listener, no change to the payment code.
+ * Sends payment confirmation and refund emails. Handlers run after commit so no email goes out
+ * for a payment that was rolled back.
  */
 @Component
 public class PaymentEmailListener {
@@ -66,10 +61,7 @@ public class PaymentEmailListener {
                         + "Banks usually show the money back within 5–10 days.");
     }
 
-    /**
-     * The payment is already saved when this runs, so a broken mail server must not turn into an
-     * error for the member ("payment failed?!"). We log it and move on.
-     */
+    /** The payment is already committed, so mail failures are logged rather than propagated. */
     private void safeSend(String to, String subject, String body) {
         try {
             sender.send(to, subject, body);
@@ -78,7 +70,7 @@ public class PaymentEmailListener {
         }
     }
 
-    /** 20.000 JOD → "20.000 JOD" (dinars always with 3 decimals on receipts) */
+    /** Dinar amounts are always shown with 3 decimals. */
     private static String money(BigDecimal amount, String currency) {
         return amount.setScale(3).toPlainString() + " " + currency;
     }

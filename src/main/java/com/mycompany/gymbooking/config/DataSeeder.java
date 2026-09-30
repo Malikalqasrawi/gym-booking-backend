@@ -18,13 +18,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Runs once at startup and adds the starter data (StarterData) that is MISSING, so you can try the app
- * right away. It checks before adding, so restarting the backend never creates duplicates, and data you
- * already have is kept (it only fills in what's empty).
- *
- *   Branches:  5 around Amman (Abdoun, Khalda, Sweifieh, Shmeisani, Jubeiha)
- *   Admin:     admin@gym.com / Admin1234
- *   Trainers:  22, e.g. sara.trainer@gym.com, yousef.trainer@gym.com ... all with password Trainer1234
+ * Adds any missing {@link StarterData} at startup. Existing records are left untouched, so it is
+ * safe to run on every start.
  */
 @Component
 public class DataSeeder implements CommandLineRunner {
@@ -47,11 +42,10 @@ public class DataSeeder implements CommandLineRunner {
         this.passwordEncoder = passwordEncoder;
     }
 
-    /** @Transactional: everything below is one unit, and LAZY fields can be read safely. */
     @Override
     @Transactional
     public void run(String... args) {
-        seedBranches();   // first: trainers need a branch to be assigned to
+        seedBranches();   // trainers are assigned to branches, so these go first
         seedAdmin();
 
         int created = 0;
@@ -91,18 +85,16 @@ public class DataSeeder implements CommandLineRunner {
     }
 
     /**
-     * Creates the trainer if missing, then fills in anything still empty:
-     * branch, hourly rate, profile (category, gender, languages, tags, certificates) and weekly schedule.
-     * Trainers created before this version (Sara, Omar, Lina) get their new profile fields here.
+     * Creates the trainer if missing, then fills in an empty branch, rate, profile or schedule.
+     * This also backfills trainers seeded by earlier versions.
      *
      * @return true if a new trainer account was created
      */
     private boolean seedTrainer(TrainerSeed seed, int number) {
         boolean created = false;
 
-        // 1. Find or create the trainer
         Trainer trainer = userRepository.findByEmailIgnoreCase(seed.email())
-                .filter(user -> user instanceof Trainer)       // only if that account really is a trainer
+                .filter(user -> user instanceof Trainer)
                 .map(user -> (Trainer) user)
                 .orElse(null);
 
@@ -111,7 +103,7 @@ public class DataSeeder implements CommandLineRunner {
                 log.warn("{} exists but is not a trainer, skipping", seed.email());
                 return false;
             }
-            String phone = String.format("+96279%07d", number);   // +962790000001, +962790000002 ...
+            String phone = String.format("+96279%07d", number);
             trainer = new Trainer(seed.name(), seed.email(), phone, passwordEncoder.encode(TRAINER_PASSWORD),
                     seed.specialty(), seed.bio(), seed.years());
             trainer.markVerified();
@@ -119,22 +111,18 @@ public class DataSeeder implements CommandLineRunner {
             created = true;
         }
 
-        // 2. Branch
         if (trainer.getBranch() == null) {
             branchRepository.findByNameIgnoreCase(seed.branchName()).ifPresent(trainer::assignToBranch);
         }
 
-        // 3. Price per hour
         if (!trainer.hasHourlyRate()) {
             trainer.changeHourlyRate(new BigDecimal(seed.hourlyRate()));
         }
 
-        // 4. Profile shown in the app
         if (!trainer.hasProfile()) {
             trainer.updateProfile(seed.category(), seed.gender(), seed.languages(), seed.tags(), seed.certifications());
         }
 
-        // 5. Weekly schedule
         if (workingHoursRepository.findByTrainerId(trainer.getId()).isEmpty()) {
             final Trainer owner = trainer;
             workingHoursRepository.saveAll(seed.schedule().stream()
