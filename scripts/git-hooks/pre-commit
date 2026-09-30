@@ -1,0 +1,61 @@
+#!/bin/bash
+# ------------------------------------------------------------------
+#  Safety net: stops a commit that would put a password or key on GitHub.
+#
+#  Git runs this file by itself before every "git commit".
+#  Turn it on once per project (inside the project folder):
+#      git config core.hooksPath scripts/git-hooks
+#
+#  It checks only what you are committing right now (the staged changes):
+#    1. files that hold secrets (local.properties, .env, keystores...)
+#    2. anything that looks like a Stripe / GitHub / Google key or a private key
+#    3. your REAL values from local.properties (compared without printing them)
+#
+#  If it stops you: remove the secret, "git add" again, commit again.
+# ------------------------------------------------------------------
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+problems=0
+
+# 1. Files that must never be committed
+while IFS= read -r file; do
+  case "$(basename "$file")" in
+    local.properties.example) ;;   # the example has no real values: allowed
+    local.properties*|.env|.env.*|key.properties|*.jks|*.keystore|*.pem|*.p12)
+      echo "✗ $file must not be committed: it holds secrets"
+      problems=1 ;;
+  esac
+done <<< "$staged"
+
+# 2. Text that looks like a key, in the added lines (-G lists the files whose changes match)
+pattern='(sk|rk|pk)_(test|live)_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{10,}|BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}'
+suspicious=$(git diff --cached --name-only -G"$pattern")
+if [ -n "$suspicious" ]; then
+  echo "✗ These files contain something that looks like an API key:"
+  echo "$suspicious" | sed 's/^/    /'
+  problems=1
+fi
+
+# 3. The real secret values from local.properties must not appear in any added line
+if [ -f local.properties ]; then
+  added=$(git diff --cached -U0 | grep '^+' | grep -v '^+++')
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|\#*) continue ;; esac     # empty lines and comments
+    key=${line%%=*}
+    value=${line#*=}
+    [ ${#value} -lt 6 ] && continue               # "key=" with no value (yet), or too short to check
+    # The value reaches grep as a "file" <(...), never as a command-line argument other programs could see
+    if grep -qF -f <(printf '%s\n' "$value") <<< "$added"; then
+      echo "✗ The value of $key (from local.properties) is in a staged change"
+      problems=1
+    fi
+  done < local.properties
+fi
+
+if [ $problems -ne 0 ]; then
+  echo
+  echo "Commit stopped. Remove the secret, 'git add' the file again, then commit."
+  exit 1
+fi
+exit 0
