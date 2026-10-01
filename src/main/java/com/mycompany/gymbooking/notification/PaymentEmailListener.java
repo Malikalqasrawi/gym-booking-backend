@@ -2,6 +2,8 @@ package com.mycompany.gymbooking.notification;
 
 import com.mycompany.gymbooking.payment.BookingPaidEvent;
 import com.mycompany.gymbooking.payment.BookingRefundedEvent;
+import com.mycompany.gymbooking.payment.ChargeConversion;
+import com.mycompany.gymbooking.payment.CurrencyUnits;
 import java.math.BigDecimal;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
@@ -38,7 +40,7 @@ public class PaymentEmailListener {
                         + "  Trainer:   " + paid.trainerName() + "\n"
                         + "  When:      " + paid.when() + "\n"
                         + "  Where:     " + paid.where() + "\n"
-                        + "  Paid:      " + money(paid.amount(), paid.currency()) + " with " + paid.paymentMethod() + "\n"
+                        + "  Paid:      " + paidAmount(paid) + " with " + paid.paymentMethod() + "\n"
                         + "  Booking:   #" + paid.bookingId() + "\n\n"
                         + cancelLine + "\n"
                         + "See you at the gym!");
@@ -70,9 +72,16 @@ public class PaymentEmailListener {
         }
     }
 
-    /** Dinar amounts are always shown with 3 decimals. */
+    /** "28.21 USD (20.000 JOD)" when charged in another currency, otherwise "20.000 JOD". */
+    private static String paidAmount(BookingPaidEvent paid) {
+        String charged = money(paid.amount(), paid.currency());
+        return paid.currency().equalsIgnoreCase(ChargeConversion.PRICE_CURRENCY)
+                ? charged
+                : charged + " (" + money(paid.price(), ChargeConversion.PRICE_CURRENCY) + ")";
+    }
+
     private static String money(BigDecimal amount, String currency) {
-        return amount.setScale(3).toPlainString() + " " + currency;
+        return amount.setScale(CurrencyUnits.decimals(currency)).toPlainString() + " " + currency;
     }
 
     private static String firstName(String fullName) {

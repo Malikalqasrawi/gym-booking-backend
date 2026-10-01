@@ -26,8 +26,6 @@ import org.hibernate.type.SqlTypes;
 @Table(name = "payments")
 public class Payment {
 
-    public static final String CURRENCY = "JOD";
-
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -44,7 +42,7 @@ public class Payment {
     @Column(length = 100, unique = true)
     private String providerPaymentId;
 
-    /** Copied from the booking. Scale 3 because 1 JOD = 1000 fils. */
+    /** Amount charged to the card, in {@link #currency}. Scale 3 fits JOD (1 JOD = 1000 fils). */
     @Column(nullable = false, precision = 8, scale = 3)
     private BigDecimal amount;
 
@@ -78,11 +76,11 @@ public class Payment {
     protected Payment() {
     }
 
-    public Payment(Booking booking, String provider, LocalDateTime now) {
+    public Payment(Booking booking, String provider, BigDecimal amount, String currency, LocalDateTime now) {
         this.booking = booking;
         this.provider = provider;
-        this.amount = booking.getPrice();
-        this.currency = CURRENCY;
+        this.amount = amount;
+        this.currency = currency;
         this.status = PaymentStatus.PENDING;
         this.createdAt = now;
     }

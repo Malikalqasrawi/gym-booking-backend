@@ -68,7 +68,7 @@ sequenceDiagram
 
     App->>API: POST /api/bookings/{id}/payment
     API->>DB: lock booking, check it is ACCEPTED and within the deadline
-    API->>Stripe: create PaymentIntent (amount in fils, Idempotency-Key)
+    API->>Stripe: create PaymentIntent (USD equivalent, Idempotency-Key)
     Stripe-->>API: id + client_secret
     API-->>App: client_secret + publishable key
     App->>Stripe: card entered in Stripe PaymentSheet
@@ -90,7 +90,7 @@ sequenceDiagram
 - **Plain REST instead of the Stripe SDK.** The API only needs three Stripe endpoints, so it calls them with Spring's `RestClient`. The integration tests then run against a local fake Stripe server instead of mocks.
 - **Time is injected.** Services use a `Clock` in the gym's timezone (`Asia/Amman`), so deadlines are deterministic in tests (`MutableClock`).
 - **Expiry is enforced on read.** `Booking.statusAt(now)` already reports overdue bookings as expired, and the scheduled job persists that every minute, one transaction per booking.
-- **Money.** Amounts are `BigDecimal` in JOD, which has three decimal places (1 JOD = 1000 fils). Amounts that Stripe cannot charge are rejected, never rounded.
+- **Money.** Prices are `BigDecimal` in JOD, which has three decimal places (1 JOD = 1000 fils). Stripe can't charge JOD, so cards are charged the USD equivalent at the dinar's fixed peg (`ChargeConversion`), and receipts show both amounts. Charge currency and rate are configuration, so a JOD-capable provider needs no code change.
 - **Secrets stay out of the repo.** Configuration comes from a git-ignored `local.properties` or `.env`. A pre-commit hook blocks key-like strings, and the app refuses to start with live Stripe keys.
 
 ## Tech stack
@@ -153,6 +153,7 @@ Settings are in `src/main/resources/application.properties`. Secrets go in `loca
 | `app.payments.stripe.secret-key` | `STRIPE_SECRET_KEY` | `sk_test_...` only |
 | `app.payments.stripe.publishable-key` | `STRIPE_PUBLISHABLE_KEY` | `pk_test_...`, passed to the app |
 | `app.payments.stripe.webhook-secret` | `STRIPE_WEBHOOK_SECRET` | Optional |
+| `app.payments.charge-currency` / `app.payments.jod-exchange-rate` | | `USD` / `1.41044` (fixed peg). Use `JOD` / `1` with a provider that supports dinars |
 | `app.notifications.mode` | | `console` (default) or `email` (uses `spring.mail.*`) |
 
 Without Stripe keys the service still starts, and the payment endpoints return `503 PAYMENTS_NOT_CONFIGURED`.
@@ -271,13 +272,14 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-49 tests. They need no MySQL, network or Stripe account.
+52 tests. They need no MySQL, network or Stripe account.
 
 | Test | Covers |
 |---|---|
 | `BookingTest` | Booking state machine, deadlines, expiry, 24 h cancellation rule |
 | `PaymentTest` | Payment status transitions |
-| `CurrencyUnitsTest` | JOD minor units and amounts Stripe cannot charge |
+| `CurrencyUnitsTest` | Minor units per currency and amounts Stripe cannot charge |
+| `ChargeConversionTest` | JOD to USD conversion and rounding |
 | `StripeWebhookVerifierTest` | Signature and timestamp checks |
 | `StripePaymentGatewayTest` | Requests sent to Stripe, idempotency, error handling |
 | `InMemoryRateLimiterTest` | Token bucket refill and `Retry-After` |

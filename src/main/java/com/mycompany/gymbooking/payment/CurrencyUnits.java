@@ -6,7 +6,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /** Converts between decimal amounts and Stripe's integer minor units (cents, fils, ...). */
-final class CurrencyUnits {
+public final class CurrencyUnits {
 
     /** Stripe requires three-decimal amounts to end in 0 (multiples of 0.010). */
     private static final Set<String> THREE_DECIMALS = Set.of("BHD", "JOD", "KWD", "OMR", "TND");
@@ -17,7 +17,7 @@ final class CurrencyUnits {
     private CurrencyUnits() {
     }
 
-    static int decimals(String currency) {
+    public static int decimals(String currency) {
         String code = currency.toUpperCase(Locale.ROOT);
         if (THREE_DECIMALS.contains(code)) {
             return 3;
