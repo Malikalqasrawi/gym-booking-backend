@@ -206,9 +206,12 @@ class GymBookingApiTest {
         Reply start = call("POST", "/api/bookings/" + id + "/payment", member, null);
         assertEquals(200, start.status(), start.body().toString());
         assertEquals("pk_test_fake", start.body().path("publishableKey").asText());
-        assertEquals(0, start.body().path("amount").decimalValue().compareTo(new BigDecimal("20")));
+        assertEquals(0, start.body().path("price").decimalValue().compareTo(new BigDecimal("20")));
+        assertEquals(0, start.body().path("amount").decimalValue().compareTo(new BigDecimal("28.21")));
+        assertEquals("USD", start.body().path("currency").asText());
         String paymentIntent = paymentIntentOf(start);
-        assertEquals("20000", stripe.intent(paymentIntent).get("amount").toString(), "20 JOD = 20000 fils");
+        assertEquals("2821", stripe.intent(paymentIntent).get("amount").toString(), "20 JOD = 28.21 USD = 2821 cents");
+        assertEquals("usd", stripe.intent(paymentIntent).get("currency"));
 
         assertEquals("PAYMENT_NOT_COMPLETED", call("POST", "/api/bookings/" + id + "/payment/confirm", member, null).code());
 
@@ -221,6 +224,7 @@ class GymBookingApiTest {
 
         String email = memberEmail(member);
         assertEquals(1, mailbox.count(email, "Booking confirmed"), "exactly one receipt");
+        assertTrue(mailbox.to(email).stream().anyMatch(e -> e.body().contains("28.21 USD (20.000 JOD) with Visa •••• 4242")));
         assertEquals(1, mailbox.count("sara.trainer@gym.com", "Session confirmed"));
 
         assertEquals("PAID", call("POST", "/api/bookings/" + id + "/payment/confirm", member, null).body().path("status").asText());

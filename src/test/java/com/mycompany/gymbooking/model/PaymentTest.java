@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.mycompany.gymbooking.exception.ConflictException;
+import com.mycompany.gymbooking.payment.ChargeConversion;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -24,15 +25,16 @@ class PaymentTest {
         Member member = new Member("Malik Test", "malik@test.com", "0790000000", "hash");
         Booking booking = new Booking(member, trainer, LocalDate.of(2026, 10, 7), LocalTime.of(8, 0), 90,
                 trainer.priceFor(90), null, NOW, NOW.plusHours(24));
-        return new Payment(booking, "stripe", NOW);
+        ChargeConversion usd = new ChargeConversion("USD", new BigDecimal("1.41044"));
+        return new Payment(booking, "stripe", usd.toChargeAmount(booking.getPrice()), usd.currency(), NOW);
     }
 
     @Test
-    @DisplayName("a new payment copies the booking's price, in JOD, and starts PENDING")
-    void newPaymentCopiesThePrice() {
+    @DisplayName("a new payment stores the charged amount (33 JOD = 46.54 USD) and starts PENDING")
+    void newPaymentStoresTheChargedAmount() {
         Payment payment = newPayment();
-        assertEquals(new BigDecimal("33.000"), payment.getAmount());
-        assertEquals("JOD", payment.getCurrency());
+        assertEquals(new BigDecimal("46.54"), payment.getAmount());
+        assertEquals("USD", payment.getCurrency());
         assertEquals(PaymentStatus.PENDING, payment.getStatus());
         assertEquals("Card", payment.getMethodLabel(), "no card details before paying");
     }

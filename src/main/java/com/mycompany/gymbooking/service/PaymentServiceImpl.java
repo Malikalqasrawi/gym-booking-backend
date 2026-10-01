@@ -14,6 +14,7 @@ import com.mycompany.gymbooking.model.Payment;
 import com.mycompany.gymbooking.model.PaymentStatus;
 import com.mycompany.gymbooking.payment.BookingPaidEvent;
 import com.mycompany.gymbooking.payment.BookingRefundedEvent;
+import com.mycompany.gymbooking.payment.ChargeConversion;
 import com.mycompany.gymbooking.payment.GatewayPayment;
 import com.mycompany.gymbooking.payment.GatewayPaymentStatus;
 import com.mycompany.gymbooking.payment.GatewayRefund;
@@ -48,6 +49,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final BookingRepository bookingRepository;
     private final PaymentRepository paymentRepository;
     private final PaymentGateway gateway;
+    private final ChargeConversion conversion;
     private final ApplicationEventPublisher events;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -58,6 +60,7 @@ public class PaymentServiceImpl implements PaymentService {
     public PaymentServiceImpl(BookingRepository bookingRepository,
                               PaymentRepository paymentRepository,
                               PaymentGateway gateway,
+                              ChargeConversion conversion,
                               ApplicationEventPublisher events,
                               ObjectMapper objectMapper,
                               Clock clock,
@@ -67,6 +70,7 @@ public class PaymentServiceImpl implements PaymentService {
         this.bookingRepository = bookingRepository;
         this.paymentRepository = paymentRepository;
         this.gateway = gateway;
+        this.conversion = conversion;
         this.events = events;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -87,7 +91,8 @@ public class PaymentServiceImpl implements PaymentService {
         booking.requirePayable(now);
 
         Payment payment = paymentRepository.findByBookingId(bookingId)
-                .orElseGet(() -> paymentRepository.save(new Payment(booking, gateway.provider(), now)));
+                .orElseGet(() -> paymentRepository.save(new Payment(booking, gateway.provider(),
+                        conversion.toChargeAmount(booking.getPrice()), conversion.currency(), now)));
 
         GatewayPayment gatewayPayment;
         if (payment.getProviderPaymentId() == null) {
@@ -112,6 +117,7 @@ public class PaymentServiceImpl implements PaymentService {
                 gatewayPayment.clientSecret(),
                 gateway.publishableKey(),
                 merchantName,
+                booking.getPrice(),
                 payment.getAmount(),
                 payment.getCurrency(),
                 booking.payDeadline(),
@@ -260,6 +266,7 @@ public class PaymentServiceImpl implements PaymentService {
                 booking.getTrainer().getFullName(),
                 BookingTexts.when(booking),
                 BookingTexts.where(booking),
+                booking.getPrice(),
                 payment.getAmount(),
                 payment.getCurrency(),
                 payment.getMethodLabel(),
