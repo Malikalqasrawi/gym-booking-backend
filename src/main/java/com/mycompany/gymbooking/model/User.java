@@ -120,6 +120,10 @@ public abstract class User {
         return verificationCodeExpiresAt == null || now.isAfter(verificationCodeExpiresAt);
     }
 
+    public boolean hasVerificationCode() {
+        return verificationCode != null;
+    }
+
     public boolean verificationCodeMatches(String code) {
         return verificationCode != null && verificationCode.equals(code);
     }

@@ -4,10 +4,12 @@ import com.mycompany.gymbooking.dto.AvailabilityResponse;
 import com.mycompany.gymbooking.dto.TimeSlotResponse;
 import com.mycompany.gymbooking.exception.BadRequestException;
 import com.mycompany.gymbooking.exception.NotFoundException;
+import com.mycompany.gymbooking.model.BlockedTime;
 import com.mycompany.gymbooking.model.Booking;
 import com.mycompany.gymbooking.model.Branch;
 import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.model.WorkingHours;
+import com.mycompany.gymbooking.repository.BlockedTimeRepository;
 import com.mycompany.gymbooking.repository.BookingRepository;
 import com.mycompany.gymbooking.repository.TrainerRepository;
 import com.mycompany.gymbooking.repository.WorkingHoursRepository;
@@ -24,7 +26,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Clips each working block to branch hours, steps through it, and drops slots inside the minimum
- * notice or overlapping a booking. Uses minutes since midnight so durations can't wrap past midnight.
+ * notice, overlapping a booking or inside a blocked time. Uses minutes since midnight so durations
+ * can't wrap past midnight.
  */
 @Service
 public class AvailabilityServiceImpl implements AvailabilityService {
@@ -34,6 +37,7 @@ public class AvailabilityServiceImpl implements AvailabilityService {
     private final TrainerRepository trainerRepository;
     private final WorkingHoursRepository workingHoursRepository;
     private final BookingRepository bookingRepository;
+    private final BlockedTimeRepository blockedTimeRepository;
     private final Clock clock;
     private final int daysAhead;
     private final int stepMinutes;
@@ -42,6 +46,7 @@ public class AvailabilityServiceImpl implements AvailabilityService {
     public AvailabilityServiceImpl(TrainerRepository trainerRepository,
                                    WorkingHoursRepository workingHoursRepository,
                                    BookingRepository bookingRepository,
+                                   BlockedTimeRepository blockedTimeRepository,
                                    Clock clock,
                                    @Value("${app.booking.days-ahead}") int daysAhead,
                                    @Value("${app.booking.slot-step-minutes}") int stepMinutes,
@@ -49,6 +54,7 @@ public class AvailabilityServiceImpl implements AvailabilityService {
         this.trainerRepository = trainerRepository;
         this.workingHoursRepository = workingHoursRepository;
         this.bookingRepository = bookingRepository;
+        this.blockedTimeRepository = blockedTimeRepository;
         this.clock = clock;
         this.daysAhead = daysAhead;
         this.stepMinutes = stepMinutes;
@@ -78,7 +84,14 @@ public class AvailabilityServiceImpl implements AvailabilityService {
         Branch branch = trainer.getBranch();
         if (branch == null) {
             return new AvailabilityResponse(trainer.getId(), trainer.getFullName(), null, null,
-                    date, durationMinutes, List.of());
+                    date, durationMinutes, List.of(), null);
+        }
+
+        List<BlockedTime> blocks = blockedTimeRepository.findOnDate(trainerId, branch.getId(), date);
+        BlockedTime wholeDay = blocks.stream().filter(BlockedTime::isAllDay).findFirst().orElse(null);
+        if (wholeDay != null) {
+            return new AvailabilityResponse(trainer.getId(), trainer.getFullName(), branch.getId(), branch.getName(),
+                    date, durationMinutes, List.of(), closedReason(wholeDay, trainer));
         }
 
         int earliestStart = date.equals(today)
@@ -110,7 +123,8 @@ public class AvailabilityServiceImpl implements AvailabilityService {
                 }
                 LocalTime slotStart = toTime(start);
                 LocalTime slotEnd = toTime(start + durationMinutes);
-                if (taken.stream().anyMatch(booking -> booking.overlaps(slotStart, slotEnd))) {
+                if (taken.stream().anyMatch(booking -> booking.overlaps(slotStart, slotEnd))
+                        || blocks.stream().anyMatch(blocked -> blocked.blocks(date, slotStart, slotEnd))) {
                     continue;
                 }
                 slots.put(start, new TimeSlotResponse(slotStart, slotEnd));
@@ -118,7 +132,15 @@ public class AvailabilityServiceImpl implements AvailabilityService {
         }
 
         return new AvailabilityResponse(trainer.getId(), trainer.getFullName(), branch.getId(), branch.getName(),
-                date, durationMinutes, List.copyOf(slots.values()));
+                date, durationMinutes, List.copyOf(slots.values()), null);
+    }
+
+    /** e.g. "The branch is closed on this day (Eid holiday)." */
+    private static String closedReason(BlockedTime block, Trainer trainer) {
+        String who = block.getBranch() != null
+                ? "The branch is closed on this day"
+                : trainer.getFullName().split(" ")[0] + " is off on this day";
+        return block.getReason() == null ? who + "." : who + " (" + block.getReason() + ").";
     }
 
     private static int toMinutes(LocalTime time) {

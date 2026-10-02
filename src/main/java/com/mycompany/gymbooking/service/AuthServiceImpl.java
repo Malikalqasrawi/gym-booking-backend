@@ -2,9 +2,11 @@ package com.mycompany.gymbooking.service;
 
 import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
+import com.mycompany.gymbooking.dto.ForgotPasswordRequest;
 import com.mycompany.gymbooking.dto.LoginRequest;
 import com.mycompany.gymbooking.dto.MessageResponse;
 import com.mycompany.gymbooking.dto.ResendCodeRequest;
+import com.mycompany.gymbooking.dto.ResetPasswordRequest;
 import com.mycompany.gymbooking.dto.SignUpRequest;
 import com.mycompany.gymbooking.dto.UserResponse;
 import com.mycompany.gymbooking.dto.VerifyEmailRequest;
@@ -30,8 +32,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Sign-up, email verification, trainer invites and login, with limits on code attempts, code resends
- * and failed logins. Invited trainers use the same one-time code fields as email verification.
+ * Sign-up, email verification, trainer invites, login and password resets, with limits on code
+ * attempts, code resends and failed logins. Invites and password resets use the same one-time code
+ * fields as email verification: an invite before the account is verified, a reset only after.
  */
 @Service
 public class AuthServiceImpl implements AuthService {
@@ -205,6 +208,60 @@ public class AuthServiceImpl implements AuthService {
         userRepository.save(trainer);
 
         return buildAuthResponse(trainer);
+    }
+
+    @Override
+    @Transactional
+    public MessageResponse forgotPassword(ForgotPasswordRequest request) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
+                // Unverified members verify instead, and invited trainers accept their invite.
+                .filter(user -> user.isVerified() && user.isActive())
+                // Within the cooldown no new code is sent; the last one still works.
+                .filter(user -> user.secondsUntilNewCodeAllowed(now, resendCooldownSeconds) == 0)
+                .ifPresent(user -> {
+                    String code = codeGenerator.generate();
+                    user.issueVerificationCode(code, now, now.plusMinutes(codeValidityMinutes));
+                    userRepository.save(user);
+                    notificationSender.send(
+                            user.getEmail(),
+                            "Reset your Gym Booking password",
+                            "Hi " + user.getFullName() + ",\n\n"
+                                    + "Your code to reset your password is: " + code + "\n"
+                                    + "It expires in " + codeValidityMinutes + " minutes.\n\n"
+                                    + "If you didn't ask for this, you can ignore this email. Your password stays the same.");
+                });
+        // Same answer whether or not the account exists, so this can't be used to find accounts.
+        return new MessageResponse("If an account exists for this email, we sent it a code to reset the password.");
+    }
+
+    @Override
+    // Keep the wrong-code counter even though INVALID_CODE is thrown afterwards.
+    @Transactional(noRollbackFor = BadRequestException.class)
+    public MessageResponse resetPassword(ResetPasswordRequest request) {
+        User user = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
+                .filter(found -> found.isVerified() && found.isActive() && found.hasVerificationCode())
+                .orElseThrow(() -> new BadRequestException("INVALID_CODE", "The email or code is not correct."));
+
+        if (user.hasNoCodeAttemptsLeft(maxCodeAttempts)) {
+            throw new BadRequestException("TOO_MANY_ATTEMPTS", "Too many wrong codes. Request a new code.");
+        }
+        if (user.isVerificationCodeExpired(LocalDateTime.now(clock))) {
+            throw new BadRequestException("CODE_EXPIRED", "The code has expired. Request a new one.");
+        }
+        if (!user.verificationCodeMatches(request.code())) {
+            int triesLeft = user.recordWrongCode(maxCodeAttempts);
+            userRepository.save(user);
+            throw new BadRequestException("INVALID_CODE", triesLeft > 0
+                    ? "The email or code is not correct. " + triesLeft + (triesLeft == 1 ? " try" : " tries") + " left."
+                    : "The email or code is not correct. No tries left. Request a new code.");
+        }
+
+        user.changePasswordHash(passwordEncoder.encode(request.password()));
+        user.markVerified();            // clears the code so it can't be used again
+        user.recordSuccessfulLogin();   // proving the email also lifts a login lock
+        userRepository.save(user);
+        return new MessageResponse("Your password was changed. Log in with your new password.");
     }
 
     private void sendNewVerificationCode(User user) {

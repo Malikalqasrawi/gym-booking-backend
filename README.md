@@ -25,12 +25,13 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 
 | Area | Details |
 |---|---|
-| Accounts | Sign-up with email verification code, JWT auth, member / trainer / admin roles, lockout after 5 failed logins |
+| Accounts | Sign-up with email verification code, password reset by emailed code, JWT auth, member / trainer / admin roles, lockout after 5 failed logins |
 | Branches & trainers | 5 branches with coordinates and opening hours, 22 trainer profiles, filters (category, gender, max rate), weekly schedules |
 | Availability | Free start times per trainer, date and duration (30/45/60/90 min), based on working hours, branch hours and existing bookings |
 | Bookings | Request, accept or decline, 24 h reply deadline, max 3 pending requests per member, cancellation rules |
 | Payments | Stripe PaymentIntents (test mode), 12 h payment window, email receipts, automatic refunds, signed webhooks |
 | Admin | Add trainers by email invite, edit profiles and weekly schedules, deactivate (cancels and refunds their upcoming bookings) or reactivate |
+| Gym operations | See every booking with contact details, cancel any session before it starts (full refund), close a branch or give a trainer time off for whole days or set hours |
 | Hardening | Per-IP rate limiting, owner-scoped queries, optimistic and pessimistic locking, secrets kept out of the repo |
 
 ## Architecture
@@ -91,6 +92,8 @@ sequenceDiagram
 - **Plain REST instead of the Stripe SDK.** The API only needs three Stripe endpoints, so it calls them with Spring's `RestClient`. The integration tests then run against a local fake Stripe server instead of mocks.
 - **Time is injected.** Services use a `Clock` in the gym's timezone (`Asia/Amman`), so deadlines are deterministic in tests (`MutableClock`).
 - **Admins never know trainer passwords.** A trainer added by an admin gets an account with a random password and an emailed one-time invite code. Accepting the invite sets their own password. Deactivated trainers are hidden from members, their tokens stop working, and their upcoming bookings are cancelled by the gym with full refunds.
+- **The gym can always cancel, and always refunds in full.** Members can't cancel a paid session in its last 24 hours, but the gym can until it starts. Cancelling a single booking, deactivating a trainer and blocking time all go through the same path: each booking is locked and re-checked, paid ones are refunded in full, and the member and trainer are emailed the reason.
+- **Blocked times are applied in two places.** Availability never offers a blocked slot, and creating a block cancels the bookings already inside it. The admin first gets a preview of how many bookings that would be. Deleting a block frees the time again but doesn't restore cancelled bookings.
 - **Expiry is enforced on read.** `Booking.statusAt(now)` already reports overdue bookings as expired, and the scheduled job persists that every minute, one transaction per booking.
 - **Money.** Prices are `BigDecimal` in JOD, which has three decimal places (1 JOD = 1000 fils). Stripe can't charge JOD, so cards are charged the USD equivalent at the dinar's fixed peg (`ChargeConversion`), and receipts show both amounts. Charge currency and rate are configuration, so a JOD-capable provider needs no code change.
 - **Secrets stay out of the repo.** Configuration comes from a git-ignored `local.properties` or `.env`. A pre-commit hook blocks key-like strings, and the app refuses to start with live Stripe keys.
@@ -191,6 +194,8 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST | `/api/auth/resend-code` | `email` | `200` |
 | POST | `/api/auth/login` | `email, password` | `200 {token, user}` |
 | POST | `/api/auth/accept-invite` | `email, code, password` | `200 {token, user}`; for trainers added by an admin |
+| POST | `/api/auth/forgot-password` | `email` | `200`. Emails a reset code (valid 10 minutes) to a verified account; the same answer whether or not the email exists |
+| POST | `/api/auth/reset-password` | `email, code, password` | `200`; then log in with the new password. Also lifts a login lock |
 | GET | `/api/users/me` | | `200` current user |
 
 ### Branches and trainers
@@ -202,7 +207,7 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST / PUT / DELETE | `/api/branches[/{id}]` | admin | A branch with trainers or bookings can't be deleted (`409 BRANCH_IN_USE`) |
 | GET | `/api/branches/{id}/trainers` | any | Optional `?category=&gender=&maxRate=` |
 | GET | `/api/trainers/{id}` | any | Profile and weekly schedule |
-| GET | `/api/trainers/{id}/availability?date=&duration=` | any | Free start times. `duration` is 30/45/60/90, `date` is within the next 14 days |
+| GET | `/api/trainers/{id}/availability?date=&duration=` | any | Free start times. `duration` is 30/45/60/90, `date` is within the next 14 days. `closedReason` is set when the branch is closed or the trainer is off all day |
 
 ### Admin: trainers
 
@@ -216,6 +221,18 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST | `/api/admin/trainers/{id}/invite` | Sends a new invite code |
 | POST | `/api/admin/trainers/{id}/deactivate` | Optional `{reason}`, shown to members whose bookings are cancelled |
 | POST | `/api/admin/trainers/{id}/reactivate` | |
+
+### Admin: bookings and blocked times
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/admin/bookings` | Sessions that haven't ended, soonest first. `?past=true` lists ended ones (latest 200). Optional `branchId`, `trainerId`, `status`. Adds member email and phone, and `gymCanCancel` |
+| GET | `/api/admin/bookings/{id}` | |
+| POST | `/api/admin/bookings/{id}/cancel` | Optional `{reason}`. Allowed until the session starts; a paid session is refunded in full |
+| GET | `/api/admin/blocked-times` | Blocks that haven't ended |
+| POST | `/api/admin/blocked-times/preview` | Same body as below; returns `{bookings, paidBookings}` it would cancel |
+| POST | `/api/admin/blocked-times` | `{branchId or trainerId, startDate, endDate, startTime?, endTime?, reason?}`. Without times the whole days are blocked. Cancels the bookings inside |
+| DELETE | `/api/admin/blocked-times/{id}` | Frees the time again |
 
 ### Bookings
 
@@ -290,7 +307,7 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-62 tests. They need no MySQL, network or Stripe account.
+68 tests. They need no MySQL, network or Stripe account.
 
 | Test | Covers |
 |---|---|
@@ -302,8 +319,9 @@ mvn verify
 | `StripeWebhookVerifierTest` | Signature and timestamp checks |
 | `StripePaymentGatewayTest` | Requests sent to Stripe, idempotency, error handling |
 | `InMemoryRateLimiterTest` | Token bucket refill and `Retry-After` |
-| `GymBookingApiTest` | End-to-end over HTTP: auth, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages |
+| `GymBookingApiTest` | End-to-end over HTTP: auth, password reset, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages |
 | `AdminTrainerApiTest` | End-to-end: admin-only access, invite flow, validation, editing, schedules, deactivation with refunds, branches in use |
+| `AdminBookingApiTest` | End-to-end: admin bookings list and filters, gym cancellations with refunds, trainer and branch blocks, validation |
 
 CI runs the test suite and a Docker Compose smoke test on every push and pull request.
 
@@ -314,7 +332,7 @@ CI runs the test suite and a Docker Compose smoke test on every push and pull re
 - [x] Booking requests, accept / decline, expiry
 - [x] Stripe payments, refunds, confirmation emails
 - [x] Admin: trainer invites, profiles, weekly schedules, deactivation
-- [ ] Admin: all bookings, gym cancellations, blocked dates, branch management in the app
+- [x] Admin: all bookings, gym cancellations, blocked times, branch management
 - [ ] Refresh tokens and 2FA for admins
 - [ ] Google sign-in
 
