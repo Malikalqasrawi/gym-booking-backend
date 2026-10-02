@@ -110,6 +110,9 @@ public class Booking {
     @Column(length = 300)
     private String cancellationNote;
 
+    /** When SessionReminders dealt with this paid booking (sent the reminder, or decided none was needed). */
+    private LocalDateTime reminderCheckedAt;
+
     @Version
     private Long version;
 
@@ -258,6 +261,10 @@ public class Booking {
         this.refundableUntil = refundableUntil;
     }
 
+    public void markReminderChecked(LocalDateTime now) {
+        this.reminderCheckedAt = now;
+    }
+
     /** Marks an overdue request or unpaid booking as EXPIRED. Returns true if the status changed. */
     public boolean expireIfOverdue(LocalDateTime now) {
         boolean waiting = status == BookingStatus.REQUESTED || status == BookingStatus.ACCEPTED;
@@ -361,5 +368,9 @@ public class Booking {
 
     public String getCancellationNote() {
         return cancellationNote;
+    }
+
+    public LocalDateTime getReminderCheckedAt() {
+        return reminderCheckedAt;
     }
 }

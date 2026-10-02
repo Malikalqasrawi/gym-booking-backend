@@ -12,7 +12,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * Services use it instead of now() so tests can supply a fixed clock.
  */
 @Configuration
-@EnableScheduling   // for BookingExpiryJob
+@EnableScheduling   // for the background jobs: expiry, reminders, email retries, cleanup
 public class TimeConfig {
 
     @Bean
