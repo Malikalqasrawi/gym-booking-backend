@@ -20,6 +20,7 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 - **Nothing stays pending forever.** Trainers have 24 h to answer and accepted sessions must be paid within 12 h. After that, the slot is released automatically.
 - **Payments are verified server-side.** Card details go straight from the app to Stripe, and the API confirms every payment with Stripe. Refunds are automatic when a paid session is cancelled at least 24 h in advance.
 - **Data is scoped to its owner.** Members see their own bookings and trainers see requests addressed to them. Any other booking returns `404`.
+- **Nobody misses a session or a change to their account.** Members and trainers get a reminder the day before a paid session, and every password or two-factor change is emailed to the account owner.
 
 ## Features
 
@@ -32,6 +33,7 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 | Availability | Free start times per trainer, date and duration (30/45/60/90 min), based on working hours, branch hours and existing bookings |
 | Bookings | Request, accept or decline, 24 h reply deadline, max 3 pending requests per member, cancellation rules |
 | Payments | Stripe PaymentIntents (test mode), 12 h payment window, email receipts, automatic refunds, signed webhooks |
+| Emails | Branded HTML with a plain-text version, sent through Gmail from an outbox with retries, security alerts (password, two-factor, Google sign-in), reminders the day before a session |
 | Admin | Add trainers by email invite, edit profiles and weekly schedules, deactivate (cancels and refunds their upcoming bookings) or reactivate |
 | Gym operations | See every booking with contact details, cancel any session before it starts (full refund), close a branch or give a trainer time off for whole days or set hours |
 | Hardening | Per-IP rate limiting, owner-scoped queries, optimistic and pessimistic locking, secrets kept out of the repo |
@@ -48,17 +50,19 @@ flowchart LR
         Controllers --> Services
         Services --> Repositories["Repositories<br/>(Spring Data JPA)"]
         Services --> Gateway["PaymentGateway"]
-        Services --> Notify["NotificationSender<br/>(console / SMTP)"]
-        Job["BookingExpiryJob<br/>(every minute)"] --> Services
+        Services --> Notify["NotificationSender<br/>(email outbox)"]
+        Notify --> Dispatcher["EmailDispatcher<br/>(background, retries)"]
+        Job["Scheduled jobs<br/>(expiry, reminders)"] --> Services
     end
 
     Repositories --> DB[("MySQL 8.4")]
+    Dispatcher -->|"SMTP"| Gmail["Gmail"]
     Gateway -->|"REST"| Stripe["Stripe API"]
     Stripe -.->|"signed webhook"| Controllers
     App -.->|"card details"| Stripe
 ```
 
-Controllers handle HTTP and validation only, services own the business rules, and repositories handle persistence. External dependencies sit behind interfaces (`PaymentGateway`, `NotificationSender`, `RateLimiter`, `TokenService`), which keeps the rules independent of Stripe, SMTP or the JWT library and lets the tests replace them with fakes.
+Controllers handle HTTP and validation only, services own the business rules, and repositories handle persistence. External dependencies sit behind interfaces (`PaymentGateway`, `NotificationSender`, `MailTransport`, `RateLimiter`, `TokenService`), which keeps the rules independent of Stripe, SMTP or the JWT library and lets the tests replace them with fakes.
 
 ### Payment flow
 
@@ -81,7 +85,7 @@ sequenceDiagram
     API->>Stripe: retrieve PaymentIntent
     API->>DB: booking PAID, payment SUCCEEDED
     API-->>App: booking + receipt
-    API-)Mail: confirmation to member and trainer (after commit)
+    API-)Mail: confirmation to member and trainer (sent in the background after commit)
 ```
 
 ## Design decisions
@@ -90,7 +94,9 @@ sequenceDiagram
 - **Concurrency.** A booking request takes a pessimistic lock on the trainer row (`SELECT ... FOR UPDATE`) while it checks for overlaps. Payment, cancellation and webhook handling lock the booking row. Bookings also carry a `@Version` column, so conflicting updates fail with `BOOKING_CHANGED` instead of silently overwriting each other.
 - **Stripe is the source of truth for payments.** The confirm endpoint and the webhook both re-fetch the PaymentIntent and check the amount. Neither trusts the client or the event body. Stripe calls carry an `Idempotency-Key`, and `payments.booking_id` is unique.
 - **Late payments are refunded.** If a payment succeeds after the booking has expired or been cancelled, it is refunded right away and the client gets `PAID_TOO_LATE`.
-- **Side effects run after commit.** Emails are triggered by domain events (`BookingPaidEvent`, `BookingRefundedEvent`) handled with `@TransactionalEventListener(AFTER_COMMIT)`. A rolled-back transaction never sends an email, and a mail failure never fails a request.
+- **Emails go through an outbox.** `NotificationSender` doesn't send anything itself: it saves the email in `outgoing_emails` in the same transaction as the change it reports. A rolled-back change never sends an email, and a committed one always does, even after a restart. Once the transaction commits, `EmailDispatcher` sends the email on a background thread, so a slow or unreachable mail server never slows down or fails a request. A failed attempt is retried after 1, 5, 15 and 60 minutes, then the email is marked `FAILED`. A version column makes sure two senders can't send the same email. The text is deleted once it's sent, and the rows after 30 days. Payment emails come from domain events (`BookingPaidEvent`, `BookingRefundedEvent`) handled just before the payment commits.
+- **One text, two formats.** Each email is written once, as plain text. `EmailLayout` builds the branded HTML version from it (details as a table, steps as a list, codes in large print), so both versions always match. Anything a user typed, like a booking note, is HTML-escaped.
+- **Security alerts and reminders.** Changing or resetting the password, turning two-factor authentication on or off, moving it to a new phone and adding Google sign-in to an existing account each send an email that says what to do if it wasn't you. `SessionReminders` emails the member and the trainer 24 hours before a paid session. It locks each booking and records the reminder in `reminder_checked_at`, so nobody gets two. Sessions paid within those 24 hours get none, because the confirmation was just sent.
 - **Plain REST instead of the Stripe SDK.** The API only needs three Stripe endpoints, so it calls them with Spring's `RestClient`. The integration tests then run against a local fake Stripe server instead of mocks.
 - **Time is injected.** Services use a `Clock` in the gym's timezone (`Asia/Amman`), so deadlines are deterministic in tests (`MutableClock`).
 - **Admins never know trainer passwords.** A trainer added by an admin gets an account with a random password and an emailed one-time invite code. Accepting the invite sets their own password. Deactivated trainers are hidden from members, their tokens stop working, and their upcoming bookings are cancelled by the gym with full refunds.
@@ -137,6 +143,7 @@ cp local.properties.example local.properties
 bash scripts/create-db-user.sh    # creates the MySQL user "gymapp" and stores its password in local.properties
 # add a JWT secret to local.properties: openssl rand -base64 64 | tr -d '\n'
 # optional: set app.admin.initial-password in local.properties (otherwise a random one is printed once)
+# optional: send real emails through Gmail (see "Real emails with Gmail" below)
 mvn spring-boot:run
 ```
 
@@ -166,7 +173,9 @@ Settings are in `src/main/resources/application.properties`. Secrets go in `loca
 | `app.payments.stripe.publishable-key` | `STRIPE_PUBLISHABLE_KEY` | `pk_test_...`, passed to the app |
 | `app.payments.stripe.webhook-secret` | `STRIPE_WEBHOOK_SECRET` | Optional |
 | `app.payments.charge-currency` / `app.payments.jod-exchange-rate` | | `USD` / `1.41044` (fixed peg). Use `JOD` / `1` with a provider that supports dinars |
-| `app.notifications.mode` | | `console` (default) or `email` (uses `spring.mail.*`) |
+| `app.notifications.mode` | `EMAIL_MODE` | `console` (default) writes emails to the log; `email` sends them |
+| `spring.mail.username` | `MAIL_USERNAME` | The Gmail address that sends the emails |
+| `spring.mail.password` | `MAIL_PASSWORD` | A Gmail app password, not the Google account password |
 
 Without Stripe keys the service still starts, and the payment endpoints return `503 PAYMENTS_NOT_CONFIGURED`. Without a Google client ID, `/api/auth/google` returns `503 GOOGLE_SIGN_IN_OFF`.
 
@@ -178,6 +187,24 @@ Without Stripe keys the service still starts, and the payment endpoints return `
    - **Android**, with package name `com.malik.gym_booking` and the SHA-1 of your debug key: `keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android`
    - **iOS**, with bundle ID `com.malik.gymBooking`.
 3. Set up the app as described in its README.
+
+### Real emails with Gmail (optional)
+
+By default, emails are written to the log. To send them from a Gmail account:
+
+1. Turn on **2-Step Verification** for that Google account at [myaccount.google.com/security](https://myaccount.google.com/security). Google only offers app passwords after that.
+2. Create an app password at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), named for example "Gym Booking". Google shows a 16-letter password once.
+3. Add to `local.properties`, with the password written without spaces:
+
+   ```properties
+   app.notifications.mode=email
+   spring.mail.username=your.address@gmail.com
+   spring.mail.password=your16letterapppassword
+   ```
+
+4. Restart. Emails come from that address with the name "Gym Booking" (`app.mail.from-name`).
+
+Gmail limits how many emails a personal account can send per day, which is fine for development; a real deployment would use an email service, set with `spring.mail.host` and `spring.mail.port`. If Gmail rejects the login, the log says so and the emails wait in the outbox until it works.
 
 ### Stripe test mode
 
@@ -322,11 +349,11 @@ src/main/java/com/mycompany/gymbooking
 ├── dto/            request and response records
 ├── exception/      API exceptions and the global handler
 ├── model/          JPA entities and enums
-├── notification/   email senders and payment email listener
+├── notification/   email outbox and sending, HTML layout, payment emails, security alerts
 ├── payment/        PaymentGateway, Stripe client, webhook verification
 ├── repository/     Spring Data repositories
 ├── security/       JWT, Google ID tokens, two-factor codes (TOTP), rate limiting, security error handling
-└── service/        business logic and the expiry job
+└── service/        business logic, the expiry job and session reminders
 ```
 
 ## Tests
@@ -335,7 +362,7 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-95 tests. They need no MySQL, network, Stripe or Google account.
+107 tests. They need no MySQL, network, Stripe, Google or mail account.
 
 | Test | Covers |
 |---|---|
@@ -349,8 +376,12 @@ mvn verify
 | `InMemoryRateLimiterTest` | Token bucket refill and `Retry-After` |
 | `GoogleIdTokenVerifierTest` | Google ID tokens: signature, audience, issuer, expiry, key rotation, Google being unreachable |
 | `TotpTest` | Authenticator codes against the RFC 6238 test values, Base32, clock drift, the QR code link |
+| `EmailLayoutTest` | The HTML version of an email: details, steps, codes, paragraphs, escaping |
+| `EmailDeliveryTest` | Real SMTP against a local fake mail server: text and HTML parts, sender name, rolled-back transactions, retries, giving up, a rejected login, cleanup |
 | `SessionApiTest` | End-to-end: refresh token rotation and reuse, logout, logout on all devices, change password |
 | `GoogleSignInApiTest` | End-to-end: Google sign-up and phone number, linking members, members only, unverified sign-ups, invalid tokens, two-factor after Google |
+| `SecurityAlertsApiTest` | End-to-end: alerts for password changes and resets, two-factor on, moved and off, Google sign-in added |
+| `SessionRemindersApiTest` | End-to-end: one reminder to the member and the trainer a day before, none for sessions paid within that day |
 | `TwoFactorApiTest` | End-to-end: admin setup at first login, codes and recovery codes, used codes, lockout, expired challenges, moving to a new phone, turning it off |
 | `GymBookingApiTest` | End-to-end over HTTP: auth, password reset, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages |
 | `AdminTrainerApiTest` | End-to-end: admin-only access, invite flow, validation, editing, schedules, deactivation with refunds, branches in use |
@@ -369,6 +400,7 @@ CI runs the test suite and a Docker Compose smoke test on every push and pull re
 - [x] Refresh tokens, logout on all devices, change password
 - [x] Two-factor authentication with an authenticator app
 - [x] Google sign-in for members
+- [x] Real emails: Gmail, HTML layout, retries, security alerts, session reminders
 
 ## License
 

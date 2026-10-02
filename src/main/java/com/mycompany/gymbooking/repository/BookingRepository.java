@@ -151,4 +151,12 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
                or (b.status = com.mycompany.gymbooking.model.BookingStatus.ACCEPTED and b.payByAt <= :now)
             """)
     List<Long> findOverdueIds(@Param("now") LocalDateTime now);
+
+    /** Paid bookings on these days that SessionReminders hasn't dealt with yet; it locks each one. */
+    @Query("""
+            select b.id from Booking b
+            where b.status = com.mycompany.gymbooking.model.BookingStatus.PAID and b.reminderCheckedAt is null
+              and b.date between :from and :to
+            """)
+    List<Long> findReminderCandidateIds(@Param("from") LocalDate from, @Param("to") LocalDate to);
 }

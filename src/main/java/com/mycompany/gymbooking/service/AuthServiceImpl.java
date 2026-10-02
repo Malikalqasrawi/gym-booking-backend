@@ -32,6 +32,7 @@ import com.mycompany.gymbooking.model.Member;
 import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.model.User;
 import com.mycompany.gymbooking.notification.NotificationSender;
+import com.mycompany.gymbooking.notification.SecurityAlerts;
 import com.mycompany.gymbooking.repository.UserRepository;
 import com.mycompany.gymbooking.security.GoogleIdTokenVerifier;
 import com.mycompany.gymbooking.security.GoogleIdTokenVerifier.GoogleAccount;
@@ -61,6 +62,7 @@ public class AuthServiceImpl implements AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final NotificationSender notificationSender;
+    private final SecurityAlerts securityAlerts;
     private final SessionService sessionService;
     private final TwoFactorService twoFactorService;
     private final TokenService tokenService;
@@ -77,6 +79,7 @@ public class AuthServiceImpl implements AuthService {
     public AuthServiceImpl(UserRepository userRepository,
                            PasswordEncoder passwordEncoder,
                            NotificationSender notificationSender,
+                           SecurityAlerts securityAlerts,
                            SessionService sessionService,
                            TwoFactorService twoFactorService,
                            TokenService tokenService,
@@ -91,6 +94,7 @@ public class AuthServiceImpl implements AuthService {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.notificationSender = notificationSender;
+        this.securityAlerts = securityAlerts;
         this.sessionService = sessionService;
         this.twoFactorService = twoFactorService;
         this.tokenService = tokenService;
@@ -275,6 +279,7 @@ public class AuthServiceImpl implements AuthService {
         // From now on every admin session has passed two-factor login, so any older ones end.
         user.endAllSessions();
         userRepository.save(user);
+        securityAlerts.twoFactorOn(user);
         return new RecoveryCodesResponse(recoveryCodes, buildAuthResponse(user));
     }
 
@@ -355,11 +360,13 @@ public class AuthServiceImpl implements AuthService {
                     : "The email or code is not correct. No tries left. Request a new code.");
         }
 
+        boolean hadPassword = user.isPasswordSet();
         user.changePasswordHash(passwordEncoder.encode(request.password()));
         user.markVerified();            // clears the code so it can't be used again
         user.recordSuccessfulLogin();   // proving the email also lifts a login lock
         user.endAllSessions();          // whoever knew the old password is logged out
         userRepository.save(user);
+        securityAlerts.passwordReset(user, hadPassword);
         return new MessageResponse("Your password was changed. Log in with your new password.");
     }
 
@@ -387,6 +394,7 @@ public class AuthServiceImpl implements AuthService {
         user.recordSuccessfulLogin();
         user.endAllSessions();
         userRepository.save(user);
+        securityAlerts.passwordChanged(user);
         return sessionService.open(user);   // this device stays logged in with a new session
     }
 
@@ -424,8 +432,14 @@ public class AuthServiceImpl implements AuthService {
     @Transactional
     public RecoveryCodesResponse confirmTwoFactorSetup(Long userId, TwoFactorCodeRequest request) {
         User user = userRepository.findById(userId).orElseThrow();
+        boolean movingToNewPhone = user.isTwoFactorEnabled();
         List<String> recoveryCodes = twoFactorService.confirmSetup(user, request.code());
         userRepository.save(user);
+        if (movingToNewPhone) {
+            securityAlerts.twoFactorMoved(user);
+        } else {
+            securityAlerts.twoFactorOn(user);
+        }
         return new RecoveryCodesResponse(recoveryCodes, null);   // other devices stay logged in
     }
 
@@ -444,6 +458,7 @@ public class AuthServiceImpl implements AuthService {
         requireSecondFactor(user, request.code());
         user.disableTwoFactor();
         userRepository.save(user);
+        securityAlerts.twoFactorOff(user);
     }
 
     private void sendNewVerificationCode(User user) {
@@ -500,7 +515,9 @@ public class AuthServiceImpl implements AuthService {
             throw new ConflictException("ACCOUNT_EXISTS",
                     "An account with this email already exists. Log in with your password.");
         }
-        if (!existing.isVerified()) {
+        if (existing.isVerified()) {
+            securityAlerts.googleLinked(existing);
+        } else {
             // Whoever signed up with this email never proved they own it; Google just did. Their
             // password is removed so they can't get in.
             existing.removePassword(unusablePasswordHash());

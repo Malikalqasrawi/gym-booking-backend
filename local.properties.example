@@ -18,11 +18,11 @@ app.jwt.secret=PUT_A_RANDOM_BASE64_SECRET_HERE
 # From `stripe listen` (optional)
 #app.payments.stripe.webhook-secret=whsec_...
 
-# SMTP (optional)
+# Real emails through Gmail (leave out to see emails in the log instead). The password is a
+# 16-letter app password from myaccount.google.com/apppasswords, not your Google password.
 #app.notifications.mode=email
-#spring.mail.host=smtp-relay.brevo.com
+#spring.mail.username=your.address@gmail.com
+#spring.mail.password=your-app-password
+# Another SMTP server instead of Gmail:
+#spring.mail.host=smtp.example.com
 #spring.mail.port=587
-#spring.mail.username=your-login
-#spring.mail.password=your-smtp-key
-#spring.mail.properties.mail.smtp.auth=true
-#spring.mail.properties.mail.smtp.starttls.enable=true
