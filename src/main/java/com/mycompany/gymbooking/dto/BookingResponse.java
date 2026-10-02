@@ -5,6 +5,7 @@ import com.mycompany.gymbooking.model.Booking;
 import com.mycompany.gymbooking.model.BookingStatus;
 import com.mycompany.gymbooking.model.CancelledBy;
 import com.mycompany.gymbooking.model.Payment;
+import com.mycompany.gymbooking.model.Review;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -40,7 +41,9 @@ public record BookingResponse(
         boolean canCancel,
         PaymentInfo payment,                                                    // null until paid
         CancelledBy cancelledBy,                                                // null unless cancelled
-        String cancellationNote
+        String cancellationNote,
+        Integer rating,                                                         // the member's stars, once rated
+        boolean canReview
 ) {
 
     /** Without payment details, for trainer views. */
@@ -50,6 +53,12 @@ public record BookingResponse(
 
     /** With payment details, for the booking's member. {@code payment} may be null. */
     public static BookingResponse from(Booking booking, Payment payment, LocalDateTime now) {
+        return from(booking, payment, null, false, now);
+    }
+
+    /** For the member's own bookings: also their rating, or whether they can rate the session now. */
+    public static BookingResponse from(Booking booking, Payment payment, Review review, boolean canReview,
+                                       LocalDateTime now) {
         boolean accepted = booking.statusAt(now) == BookingStatus.ACCEPTED;
         return new BookingResponse(
                 booking.getId(),
@@ -76,7 +85,9 @@ public record BookingResponse(
                 booking.canBeCancelledAt(now),
                 PaymentInfo.from(payment),
                 booking.getCancelledBy(),
-                booking.getCancellationNote()
+                booking.getCancellationNote(),
+                review == null ? null : review.getRating(),
+                review == null && canReview
         );
     }
 }

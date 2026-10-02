@@ -37,6 +37,7 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 | Emails | Branded HTML with a plain-text version, sent through Gmail from an outbox with retries, security alerts (password, two-factor, Google sign-in), reminders the day before a session |
 | Admin | Add trainers by email invite, edit profiles and weekly schedules, deactivate (cancels and refunds their upcoming bookings) or reactivate |
 | Gym operations | See every booking with contact details, cancel any session before it starts (full refund), close a branch or give a trainer time off for whole days or set hours |
+| Reviews | Members rate a paid session (1 to 5 stars and an optional comment) for 30 days after it takes place, once; trainers reply; admins hide reviews with a reason the member is emailed; average ratings on every trainer |
 | Hardening | Per-IP rate limiting, owner-scoped queries, optimistic and pessimistic locking, secrets kept out of the repo |
 
 ## Architecture
@@ -104,6 +105,7 @@ sequenceDiagram
 - **Admins never know trainer passwords.** A trainer added by an admin gets an account with a random password and an emailed one-time invite code. Accepting the invite sets their own password. Deactivated trainers are hidden from members, their tokens stop working, and their upcoming bookings are cancelled by the gym with full refunds.
 - **The gym can always cancel, and always refunds in full.** Members can't cancel a paid session in its last 24 hours, but the gym can until it starts. Cancelling a single booking, deactivating a trainer and blocking time all go through the same path: each booking is locked and re-checked, paid ones are refunded in full, and the member and trainer are emailed the reason.
 - **Blocked times are applied in two places.** Availability never offers a blocked slot, and creating a block cancels the bookings already inside it. The admin first gets a preview of how many bookings that would be. Deleting a block frees the time again but doesn't restore cancelled bookings.
+- **One review per session, from someone who was there.** A review belongs to a booking (`reviews.booking_id` is unique), so only a member who paid for a session that already took place can rate it, and only once. Two requests at the same moment can't both get in: the second hits the unique key and gets `409 ALREADY_REVIEWED`. Reviews are final, which keeps ratings honest. Profiles show the member's first name and initial. Hidden reviews stay in the database, so the admin can show one again, but they leave the trainer's average. Averages are computed in one grouped query for a whole list of trainers, not one query per trainer.
 - **Expiry is enforced on read.** `Booking.statusAt(now)` already reports overdue bookings as expired, and the scheduled job persists that every minute, one transaction per booking.
 - **Money.** Prices are `BigDecimal` in JOD, which has three decimal places (1 JOD = 1000 fils). Stripe can't charge JOD, so cards are charged the USD equivalent at the dinar's fixed peg (`ChargeConversion`), and receipts show both amounts. Charge currency and rate are configuration, so a JOD-capable provider needs no code change.
 - **Short access tokens, rotating refresh tokens.** Access tokens last 15 minutes. Refresh tokens are random, stored only as SHA-256 hashes, and replaced on every use. If a replaced token shows up again later, someone may have copied it, so all of that user's sessions end. Every token carries the user's token version: changing or resetting the password, "log out of all devices" and deactivation raise it, which ends all existing sessions at once without a token blocklist.
@@ -285,7 +287,9 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | GET | `/api/branches/{id}` | any | |
 | POST / PUT / DELETE | `/api/branches[/{id}]` | admin | A branch with trainers or bookings can't be deleted (`409 BRANCH_IN_USE`) |
 | GET | `/api/branches/{id}/trainers` | any | Optional `?category=&gender=&maxRate=` |
-| GET | `/api/trainers/{id}` | any | Profile and weekly schedule |
+| GET | `/api/trainers` | any | Trainers at every branch, with the same optional filters, e.g. `?category=YOGA` |
+| GET | `/api/trainers/{id}` | any | Profile and weekly schedule. Trainer lists and profiles include `averageRating` (null without reviews) and `reviewCount` |
+| GET | `/api/trainers/{id}/reviews` | any | `{averageRating, reviewCount, reviews}`, latest 50, hidden ones left out |
 | GET | `/api/trainers/{id}/availability?date=&duration=` | any | Free start times. `duration` is 30/45/60/90, `date` is within the next 14 days. `closedReason` is set when the branch is closed or the trainer is off all day |
 
 ### Admin: trainers
@@ -301,7 +305,7 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST | `/api/admin/trainers/{id}/deactivate` | Optional `{reason}`, shown to members whose bookings are cancelled |
 | POST | `/api/admin/trainers/{id}/reactivate` | |
 
-### Admin: bookings and blocked times
+### Admin: bookings, blocked times and reviews
 
 | Method | Path | Notes |
 |---|---|---|
@@ -312,6 +316,9 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST | `/api/admin/blocked-times/preview` | Same body as below; returns `{bookings, paidBookings}` it would cancel |
 | POST | `/api/admin/blocked-times` | `{branchId or trainerId, startDate, endDate, startTime?, endTime?, reason?}`. Without times the whole days are blocked. Cancels the bookings inside |
 | DELETE | `/api/admin/blocked-times/{id}` | Frees the time again |
+| GET | `/api/admin/reviews` | Newest first, with the member's full name. `?hidden=true` lists only hidden ones |
+| POST | `/api/admin/reviews/{id}/hide` | `{reason}`, emailed to the member. The review leaves the profile and the average |
+| POST | `/api/admin/reviews/{id}/show` | Shows a hidden review again |
 
 ### Bookings
 
@@ -319,12 +326,15 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 |---|---|---|---|
 | POST | `/api/bookings` | member | `{trainerId, date, startTime, durationMinutes, note?}`. `403 PHONE_NOT_VERIFIED` until the member has confirmed their phone number |
 | GET | `/api/bookings/mine` | member | |
-| GET | `/api/bookings/{id}` | member | |
+| GET | `/api/bookings/{id}` | member | Bookings include `rating` (once rated) and `canReview` |
+| POST | `/api/bookings/{id}/review` | member | `{rating: 1-5, comment?}` (max 500 characters). Paid sessions that took place in the last 30 days, once: `409 CANNOT_REVIEW`, `409 ALREADY_REVIEWED` |
 | POST | `/api/bookings/{id}/cancel` | member | Refunds automatically if paid |
 | GET | `/api/trainer/requests` | trainer | Pending requests, most urgent first |
 | GET | `/api/trainer/schedule` | trainer | Upcoming accepted and paid sessions |
 | POST | `/api/trainer/requests/{id}/accept` | trainer | Optional `{message}` |
 | POST | `/api/trainer/requests/{id}/reject` | trainer | Optional `{message}` |
+| GET | `/api/trainer/reviews` | trainer | Their own reviews, like the profile |
+| PUT | `/api/trainer/reviews/{id}/reply` | trainer | `{reply}`; answering again replaces the reply. `409 REVIEW_HIDDEN` for hidden reviews |
 
 Booking lifecycle:
 
@@ -388,7 +398,7 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-120 tests. They need no MySQL, network, Stripe, Google, mail or Twilio account.
+124 tests. They need no MySQL, network, Stripe, Google, mail or Twilio account.
 
 | Test | Covers |
 |---|---|
@@ -412,9 +422,10 @@ mvn verify
 | `PhoneVerificationApiTest` | End-to-end: numbers by country, the SMS code before the first booking, changing the number, wrong and expired codes, daily limit, converting old numbers |
 | `SessionRemindersApiTest` | End-to-end: one reminder to the member and the trainer a day before, none for sessions paid within that day |
 | `TwoFactorApiTest` | End-to-end: admin setup at first login, codes and recovery codes, used codes, lockout, expired challenges, moving to a new phone, turning it off |
-| `GymBookingApiTest` | End-to-end over HTTP: auth, password reset, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages |
+| `GymBookingApiTest` | End-to-end over HTTP: auth, password reset, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages, trainers by category |
 | `AdminTrainerApiTest` | End-to-end: admin-only access, invite flow, validation, editing, schedules, deactivation with refunds, branches in use |
 | `AdminBookingApiTest` | End-to-end: admin bookings list and filters, gym cancellations with refunds, trainer and branch blocks, validation |
+| `ReviewApiTest` | End-to-end: rating only after the session, once, within 30 days, averages on profiles and lists, trainer replies, hiding with an email to the member, showing again |
 
 CI runs the test suite and a Docker Compose smoke test on every push and pull request.
 
@@ -431,6 +442,7 @@ CI runs the test suite and a Docker Compose smoke test on every push and pull re
 - [x] Google sign-in for members
 - [x] Real emails: Gmail, HTML layout, retries, security alerts, session reminders
 - [x] Phone numbers by country, confirmed by SMS
+- [x] Session reviews, trainer replies and moderation
 
 ## License
 
