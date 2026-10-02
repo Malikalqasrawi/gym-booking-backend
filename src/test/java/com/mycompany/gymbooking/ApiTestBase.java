@@ -6,9 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mycompany.gymbooking.notification.NotificationSender;
+import com.mycompany.gymbooking.phone.PhoneCodes;
 import com.mycompany.gymbooking.security.Totp;
 import com.mycompany.gymbooking.support.CapturingNotificationSender;
 import com.mycompany.gymbooking.support.FakeGoogle;
+import com.mycompany.gymbooking.support.FakeSms;
 import com.mycompany.gymbooking.support.FakeStripe;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -18,6 +20,7 @@ import java.security.SecureRandom;
 import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Base64;
 import java.util.Map;
@@ -32,8 +35,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Starts the full application once per test class, over HTTP, with an in-memory H2 database (one per
- * class), FakeStripe instead of Stripe, FakeGoogle instead of Google's sign-in keys and
- * CapturingNotificationSender instead of email. Tests use
+ * class), FakeStripe instead of Stripe, FakeGoogle instead of Google's sign-in keys,
+ * CapturingNotificationSender instead of email and FakeSms instead of text messages. Tests use
  * their own members and time slots so they stay independent within a class.
  */
 abstract class ApiTestBase {
@@ -52,6 +55,7 @@ abstract class ApiTestBase {
     protected static FakeStripe stripe;
     protected static FakeGoogle google;
     protected static CapturingNotificationSender mailbox;
+    protected static FakeSms sms;
     protected static ConfigurableApplicationContext backend;
     protected static String baseUrl;
 
@@ -73,14 +77,17 @@ abstract class ApiTestBase {
         stripe = FakeStripe.start();
         google = FakeGoogle.start();
         mailbox = new CapturingNotificationSender();
+        sms = new FakeSms();
 
         byte[] jwtSecret = new byte[64];
         new SecureRandom().nextBytes(jwtSecret);
 
         backend = new SpringApplicationBuilder(Gymbooking.class)
-                // Notifications mode "test" disables the real senders, leaving only the capturing one
-                .initializers(context -> ((GenericApplicationContext) context)
-                        .registerBean(NotificationSender.class, () -> mailbox))
+                // Notifications mode "test" disables the real email and SMS senders, leaving only these
+                .initializers(context -> {
+                    ((GenericApplicationContext) context).registerBean(NotificationSender.class, () -> mailbox);
+                    ((GenericApplicationContext) context).registerBean(PhoneCodes.class, () -> sms);
+                })
                 .run(
                         "--server.port=0",
                         "--spring.datasource.url=jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1",
@@ -185,7 +192,11 @@ abstract class ApiTestBase {
         jdbc().update("update users set two_factor_last_step = null where email = ?", email);
     }
 
-    /** Signs up and verifies a brand-new member; returns their login token. */
+    /**
+     * Signs up and verifies a brand-new member; returns their login token. Members confirm their
+     * phone number by SMS before booking; PhoneVerificationApiTest covers that, so here it's marked
+     * as confirmed directly.
+     */
     protected static String newMember() throws Exception {
         String email = "member" + MEMBER_NUMBER.incrementAndGet() + "@test.com";
         Reply signUp = call("POST", "/api/auth/signup", null, Map.of(
@@ -194,6 +205,7 @@ abstract class ApiTestBase {
         Reply verified = call("POST", "/api/auth/verify", null,
                 Map.of("email", email, "code", mailbox.latestVerificationCode(email)));
         assertEquals(200, verified.status(), verified.body().toString());
+        jdbc().update("update users set phone_verified_at = ? where email = ?", LocalDateTime.now(AMMAN), email);
         return verified.body().path("token").asText();
     }
 

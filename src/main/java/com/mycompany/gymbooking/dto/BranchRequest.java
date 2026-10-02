@@ -1,11 +1,11 @@
 package com.mycompany.gymbooking.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.mycompany.gymbooking.phone.ValidPhone;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.time.LocalTime;
 
@@ -33,7 +33,7 @@ public record BranchRequest(
         @DecimalMax(value = "180.0", message = "Longitude must be between -180 and 180")
         Double longitude,
 
-        @Pattern(regexp = "^\\+?[0-9]{8,15}$", message = "Phone must be 8-15 digits, optionally starting with +")
+        @ValidPhone(mobile = false, message = "Enter a valid phone number for the selected country")
         String phone,
 
         @NotNull(message = "Opening time is required")

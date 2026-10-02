@@ -26,11 +26,11 @@ class GoogleSignInApiTest extends ApiTestBase {
 
         assertEquals("VALIDATION_FAILED", call("PUT", "/api/users/me/phone", session, Map.of("phone", "12ab")).code());
         Reply phone = call("PUT", "/api/users/me/phone", session, Map.of("phone", "0791234567"));
-        assertEquals("0791234567", phone.body().path("phone").asText(), phone.body().toString());
+        assertEquals("+962791234567", phone.body().path("phone").asText(), "stored with the country code: " + phone.body());
 
         Reply again = google(google.idToken("sub-" + email, email));
         assertEquals(first.body().path("user").path("id").asLong(), again.body().path("user").path("id").asLong());
-        assertEquals("0791234567", again.body().path("user").path("phone").asText());
+        assertEquals("+962791234567", again.body().path("user").path("phone").asText());
         assertEquals("INVALID_CREDENTIALS", call("POST", "/api/auth/login", null,
                 Map.of("email", email, "password", "Secret1234")).code(), "no password until one is set with Forgot password");
     }

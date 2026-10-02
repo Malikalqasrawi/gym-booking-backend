@@ -18,6 +18,11 @@ app.jwt.secret=PUT_A_RANDOM_BASE64_SECRET_HERE
 # From `stripe listen` (optional)
 #app.payments.stripe.webhook-secret=whsec_...
 
+# Real text messages (SMS) for phone codes, from Twilio Verify (leave out to see the codes in the log)
+#app.sms.twilio.account-sid=AC...
+#app.sms.twilio.auth-token=your-auth-token
+#app.sms.twilio.verify-service-sid=VA...
+
 # Real emails through Gmail (leave out to see emails in the log instead). The password is a
 # 16-letter app password from myaccount.google.com/apppasswords, not your Google password.
 #app.notifications.mode=email

@@ -22,6 +22,7 @@
         <exec.mainClass>com.mycompany.gymbooking.Gymbooking</exec.mainClass>
         <start-class>com.mycompany.gymbooking.Gymbooking</start-class>
         <jjwt.version>0.12.6</jjwt.version>
+        <libphonenumber.version>9.0.40</libphonenumber.version>
     </properties>
 
     <dependencies>
@@ -72,6 +73,13 @@
             <artifactId>jjwt-jackson</artifactId>
             <version>${jjwt.version}</version>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- Google's phone number rules for every country -->
+        <dependency>
+            <groupId>com.googlecode.libphonenumber</groupId>
+            <artifactId>libphonenumber</artifactId>
+            <version>${libphonenumber.version}</version>
         </dependency>
 
         <dependency>

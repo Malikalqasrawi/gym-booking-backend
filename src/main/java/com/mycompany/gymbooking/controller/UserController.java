@@ -2,6 +2,8 @@ package com.mycompany.gymbooking.controller;
 
 import com.mycompany.gymbooking.dto.AuthResponse;
 import com.mycompany.gymbooking.dto.ChangePasswordRequest;
+import com.mycompany.gymbooking.dto.PhoneCodeRequest;
+import com.mycompany.gymbooking.dto.PhoneCodeSentResponse;
 import com.mycompany.gymbooking.dto.PhoneRequest;
 import com.mycompany.gymbooking.dto.RecoveryCodesResponse;
 import com.mycompany.gymbooking.dto.TwoFactorCodeRequest;
@@ -11,6 +13,7 @@ import com.mycompany.gymbooking.dto.TwoFactorSetupResponse;
 import com.mycompany.gymbooking.dto.UserResponse;
 import com.mycompany.gymbooking.security.SecurityUser;
 import com.mycompany.gymbooking.service.AuthService;
+import com.mycompany.gymbooking.service.PhoneVerificationService;
 import com.mycompany.gymbooking.service.ProfileService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -29,10 +32,13 @@ public class UserController {
 
     private final AuthService authService;
     private final ProfileService profileService;
+    private final PhoneVerificationService phoneVerification;
 
-    public UserController(AuthService authService, ProfileService profileService) {
+    public UserController(AuthService authService, ProfileService profileService,
+                          PhoneVerificationService phoneVerification) {
         this.authService = authService;
         this.profileService = profileService;
+        this.phoneVerification = phoneVerification;
     }
 
     @GetMapping("/me")
@@ -44,6 +50,18 @@ public class UserController {
     public UserResponse updatePhone(@AuthenticationPrincipal SecurityUser currentUser,
                                     @Valid @RequestBody PhoneRequest request) {
         return profileService.updatePhone(currentUser.getUser().getId(), request.phone());
+    }
+
+    /** Texts a code to the user's phone number. */
+    @PostMapping("/me/phone/code")
+    public PhoneCodeSentResponse sendPhoneCode(@AuthenticationPrincipal SecurityUser currentUser) {
+        return phoneVerification.sendCode(currentUser.getUser().getId());
+    }
+
+    @PostMapping("/me/phone/confirm")
+    public UserResponse confirmPhone(@AuthenticationPrincipal SecurityUser currentUser,
+                                     @Valid @RequestBody PhoneCodeRequest request) {
+        return phoneVerification.confirm(currentUser.getUser().getId(), request.code());
     }
 
     /** Ends the sessions on other devices; this device gets a new session in the response. */

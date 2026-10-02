@@ -36,8 +36,12 @@ public abstract class User {
     @Column(nullable = false, unique = true, length = 150)
     private String email;
 
+    /** In international format, e.g. +962791234567. */
     @Column(length = 20)
     private String phone;
+
+    /** When the phone number was confirmed with a code sent to it by SMS; null until then. */
+    private LocalDateTime phoneVerifiedAt;
 
     @Column(nullable = false)
     private String passwordHash;
@@ -227,8 +231,20 @@ public abstract class User {
         return phone;
     }
 
-    public void setPhone(String phone) {
-        this.phone = phone;
+    /** A different number has to be confirmed again. */
+    public void changePhone(String phone) {
+        if (!phone.equals(this.phone)) {
+            this.phone = phone;
+            this.phoneVerifiedAt = null;
+        }
+    }
+
+    public boolean isPhoneVerified() {
+        return phoneVerifiedAt != null;
+    }
+
+    public void markPhoneVerified(LocalDateTime now) {
+        this.phoneVerifiedAt = now;
     }
 
     public String getPasswordHash() {

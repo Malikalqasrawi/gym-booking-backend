@@ -17,7 +17,7 @@ while IFS= read -r file; do
 done <<< "$staged"
 
 # Key-like strings in the staged changes
-pattern='(sk|rk|pk)_(test|live)_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{10,}|BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}'
+pattern='(sk|rk|pk)_(test|live)_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{10,}|BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|(AC|SK|VA)[0-9a-f]{32}'
 suspicious=$(git diff --cached --name-only -G"$pattern")
 if [ -n "$suspicious" ]; then
   echo "✗ These files contain something that looks like an API key:"

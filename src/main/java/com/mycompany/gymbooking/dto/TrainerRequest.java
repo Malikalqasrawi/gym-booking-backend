@@ -2,6 +2,7 @@ package com.mycompany.gymbooking.dto;
 
 import com.mycompany.gymbooking.model.Gender;
 import com.mycompany.gymbooking.model.TrainingCategory;
+import com.mycompany.gymbooking.phone.ValidPhone;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
@@ -10,7 +11,6 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.List;
@@ -28,7 +28,7 @@ public record TrainerRequest(
         String email,
 
         @NotBlank(message = "Phone number is required")
-        @Pattern(regexp = "^\\+?[0-9]{8,15}$", message = "Phone must be 8-15 digits, optionally starting with +")
+        @ValidPhone
         String phone,
 
         @NotNull(message = "Branch is required")

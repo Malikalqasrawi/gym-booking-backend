@@ -46,7 +46,7 @@ class AdminBookingApiTest extends ApiTestBase {
         JsonNode row = find(all.body(), requested);
         assertEquals("REQUESTED", row.path("status").asText());
         assertTrue(row.path("memberEmail").asText().endsWith("@test.com"));
-        assertEquals("0790000000", row.path("memberPhone").asText());
+        assertEquals("+962790000000", row.path("memberPhone").asText());
         assertEquals("sara.trainer@gym.com", row.path("trainerEmail").asText());
         assertTrue(row.path("gymCanCancel").asBoolean());
         assertEquals("Visa •••• 4242", find(all.body(), paid).path("payment").path("method").asText());

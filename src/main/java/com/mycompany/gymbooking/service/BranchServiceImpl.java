@@ -6,6 +6,7 @@ import com.mycompany.gymbooking.exception.BadRequestException;
 import com.mycompany.gymbooking.exception.ConflictException;
 import com.mycompany.gymbooking.exception.NotFoundException;
 import com.mycompany.gymbooking.model.Branch;
+import com.mycompany.gymbooking.phone.PhoneNumbers;
 import com.mycompany.gymbooking.repository.BlockedTimeRepository;
 import com.mycompany.gymbooking.repository.BookingRepository;
 import com.mycompany.gymbooking.repository.BranchRepository;
@@ -67,7 +68,7 @@ public class BranchServiceImpl implements BranchService {
                 request.city().trim(),
                 request.latitude(),
                 request.longitude(),
-                blankToNull(request.phone()),
+                phoneOrNull(request.phone()),
                 request.openingTime(),
                 request.closingTime());
 
@@ -92,7 +93,7 @@ public class BranchServiceImpl implements BranchService {
                 request.city().trim(),
                 request.latitude(),
                 request.longitude(),
-                blankToNull(request.phone()),
+                phoneOrNull(request.phone()),
                 request.openingTime(),
                 request.closingTime());
 
@@ -123,7 +124,8 @@ public class BranchServiceImpl implements BranchService {
         }
     }
 
-    private String blankToNull(String value) {
-        return (value == null || value.isBlank()) ? null : value.trim();
+    /** The branch phone is optional; a given one is stored in international format. */
+    private static String phoneOrNull(String value) {
+        return (value == null || value.isBlank()) ? null : PhoneNumbers.toInternational(value);
     }
 }

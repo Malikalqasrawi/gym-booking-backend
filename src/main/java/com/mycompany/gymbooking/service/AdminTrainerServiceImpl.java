@@ -14,6 +14,7 @@ import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.model.TrainerStatus;
 import com.mycompany.gymbooking.model.WorkingHours;
 import com.mycompany.gymbooking.notification.NotificationSender;
+import com.mycompany.gymbooking.phone.PhoneNumbers;
 import com.mycompany.gymbooking.repository.BookingRepository;
 import com.mycompany.gymbooking.repository.BookingRepository.TrainerBookingCount;
 import com.mycompany.gymbooking.repository.BranchRepository;
@@ -110,7 +111,7 @@ public class AdminTrainerServiceImpl implements AdminTrainerService {
         Branch branch = findBranch(request.branchId());
 
         // A random password nobody knows; the trainer sets their own when accepting the invite.
-        Trainer trainer = new Trainer(request.fullName().trim(), email, request.phone().trim(),
+        Trainer trainer = new Trainer(request.fullName().trim(), email, PhoneNumbers.toInternational(request.phone()),
                 passwordEncoder.encode(UUID.randomUUID().toString()),
                 request.specialty().trim(), clean(request.bio()), request.yearsOfExperience());
         applyDetails(trainer, request, branch);
@@ -199,7 +200,7 @@ public class AdminTrainerServiceImpl implements AdminTrainerService {
 
     private void applyDetails(Trainer trainer, TrainerRequest request, Branch branch) {
         trainer.setFullName(request.fullName().trim());
-        trainer.setPhone(request.phone().trim());
+        trainer.changePhone(PhoneNumbers.toInternational(request.phone()));
         trainer.setSpecialty(request.specialty().trim());
         trainer.setBio(clean(request.bio()));
         trainer.setYearsOfExperience(request.yearsOfExperience());
