@@ -12,8 +12,10 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.crypto.Mac;
@@ -286,6 +288,24 @@ class GymBookingApiTest extends ApiTestBase {
         Reply cancel = call("POST", "/api/bookings/" + id + "/cancel", member, null);
         assertEquals(409, cancel.status());
         assertEquals("TOO_LATE_TO_CANCEL", cancel.code());
+    }
+
+    @Test
+    @DisplayName("trainers by category come from every branch")
+    void trainersByCategory() throws Exception {
+        String member = newMember();
+        Reply yoga = call("GET", "/api/trainers?category=YOGA", member, null);
+        assertEquals(200, yoga.status(), yoga.body().toString());
+        assertEquals(4, yoga.body().size(), "the seeded yoga trainers");
+        Set<String> branches = new HashSet<>();
+        for (JsonNode trainer : yoga.body()) {
+            assertEquals("YOGA", trainer.path("category").asText());
+            branches.add(trainer.path("branchName").asText());
+        }
+        assertTrue(branches.size() > 1, "from more than one branch: " + branches);
+
+        assertEquals(22, call("GET", "/api/trainers", member, null).body().size(), "no filter: everyone");
+        assertEquals(401, call("GET", "/api/trainers?category=YOGA", null, null).status());
     }
 
     private static Reply webhook(String payload, String signature) throws Exception {

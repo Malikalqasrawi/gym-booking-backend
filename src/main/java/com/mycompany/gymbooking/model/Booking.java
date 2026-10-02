@@ -261,6 +261,13 @@ public class Booking {
         this.refundableUntil = refundableUntil;
     }
 
+    /** A paid session can be rated once it has ended, for {@code days} days. */
+    public boolean canBeReviewedAt(LocalDateTime now, long days) {
+        return statusAt(now) == BookingStatus.PAID
+                && !now.isBefore(getEndsAt())
+                && now.isBefore(getEndsAt().plusDays(days));
+    }
+
     public void markReminderChecked(LocalDateTime now) {
         this.reminderCheckedAt = now;
     }

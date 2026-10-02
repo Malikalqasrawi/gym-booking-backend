@@ -5,6 +5,7 @@ import com.mycompany.gymbooking.model.Gender;
 import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.model.TrainingCategory;
 import com.mycompany.gymbooking.model.WorkingHours;
+import com.mycompany.gymbooking.repository.ReviewRepository.TrainerRating;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -23,10 +24,13 @@ public record TrainerResponse(
         String languages,
         List<String> tags,
         List<String> certifications,
-        List<WorkingHoursResponse> schedule
+        List<WorkingHoursResponse> schedule,
+        Double averageRating,           // 1.0 to 5.0, null without reviews
+        long reviewCount
 ) {
 
-    public static TrainerResponse from(Trainer trainer, List<WorkingHours> hours) {
+    /** {@code rating} is null for a trainer without visible reviews. */
+    public static TrainerResponse from(Trainer trainer, List<WorkingHours> hours, TrainerRating rating) {
         Branch branch = trainer.getBranch();
         return new TrainerResponse(
                 trainer.getId(),
@@ -42,7 +46,9 @@ public record TrainerResponse(
                 trainer.getLanguages(),
                 List.copyOf(trainer.getTags()),            // copy while the lazy collections can still be loaded
                 List.copyOf(trainer.getCertifications()),
-                WorkingHoursResponse.week(hours)
+                WorkingHoursResponse.week(hours),
+                rating == null ? null : Math.round(rating.getAverage() * 10) / 10.0,
+                rating == null ? 0 : rating.getReviews()
         );
     }
 }

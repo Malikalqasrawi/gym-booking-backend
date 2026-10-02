@@ -37,6 +37,14 @@ public class TrainerController {
         return trainerService.findByBranch(branchId, new TrainerFilter(category, gender, maxRate));
     }
 
+    /** Trainers at every branch, e.g. ?category=YOGA for the home screen's categories. */
+    @GetMapping("/trainers")
+    public List<TrainerResponse> allTrainers(@RequestParam(required = false) TrainingCategory category,
+                                             @RequestParam(required = false) Gender gender,
+                                             @RequestParam(required = false) BigDecimal maxRate) {
+        return trainerService.findAll(new TrainerFilter(category, gender, maxRate));
+    }
+
     @GetMapping("/trainers/{id}")
     public TrainerResponse getTrainer(@PathVariable Long id) {
         return trainerService.findById(id);

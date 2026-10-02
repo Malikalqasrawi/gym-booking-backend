@@ -10,11 +10,13 @@ import com.mycompany.gymbooking.model.Booking;
 import com.mycompany.gymbooking.model.BookingStatus;
 import com.mycompany.gymbooking.model.Member;
 import com.mycompany.gymbooking.model.Payment;
+import com.mycompany.gymbooking.model.Review;
 import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.notification.NotificationSender;
 import com.mycompany.gymbooking.payment.RefundReason;
 import com.mycompany.gymbooking.repository.BookingRepository;
 import com.mycompany.gymbooking.repository.PaymentRepository;
+import com.mycompany.gymbooking.repository.ReviewRepository;
 import com.mycompany.gymbooking.repository.TrainerRepository;
 import com.mycompany.gymbooking.repository.UserRepository;
 import java.time.Clock;
@@ -51,6 +53,7 @@ public class BookingServiceImpl implements BookingService {
 
     private final BookingRepository bookingRepository;
     private final PaymentRepository paymentRepository;
+    private final ReviewRepository reviewRepository;
     private final TrainerRepository trainerRepository;
     private final UserRepository userRepository;
     private final AvailabilityService availabilityService;
@@ -61,9 +64,11 @@ public class BookingServiceImpl implements BookingService {
     private final long requestExpiryHours;
     private final long paymentWindowHours;
     private final int maxPendingPerMember;
+    private final long daysToReview;
 
     public BookingServiceImpl(BookingRepository bookingRepository,
                               PaymentRepository paymentRepository,
+                              ReviewRepository reviewRepository,
                               TrainerRepository trainerRepository,
                               UserRepository userRepository,
                               AvailabilityService availabilityService,
@@ -73,9 +78,11 @@ public class BookingServiceImpl implements BookingService {
                               Clock clock,
                               @Value("${app.booking.request-expiry-hours}") long requestExpiryHours,
                               @Value("${app.booking.payment-window-hours}") long paymentWindowHours,
-                              @Value("${app.booking.max-pending-per-member}") int maxPendingPerMember) {
+                              @Value("${app.booking.max-pending-per-member}") int maxPendingPerMember,
+                              @Value("${app.reviews.days-to-review}") long daysToReview) {
         this.bookingRepository = bookingRepository;
         this.paymentRepository = paymentRepository;
+        this.reviewRepository = reviewRepository;
         this.trainerRepository = trainerRepository;
         this.userRepository = userRepository;
         this.availabilityService = availabilityService;
@@ -86,6 +93,7 @@ public class BookingServiceImpl implements BookingService {
         this.requestExpiryHours = requestExpiryHours;
         this.paymentWindowHours = paymentWindowHours;
         this.maxPendingPerMember = maxPendingPerMember;
+        this.daysToReview = daysToReview;
     }
 
     /** READ_COMMITTED so the checks after the trainer lock see bookings committed while waiting for it. */
@@ -151,7 +159,7 @@ public class BookingServiceImpl implements BookingService {
         return BookingResponse.from(booking, now);
     }
 
-    /** Includes each booking's payment, loaded in a single query rather than one per booking. */
+    /** Includes each booking's payment and review, loaded in one query each rather than one per booking. */
     @Override
     @Transactional(readOnly = true)
     public List<BookingResponse> myBookings(Long memberId) {
@@ -161,18 +169,23 @@ public class BookingServiceImpl implements BookingService {
         List<Long> ids = bookings.stream().map(Booking::getId).toList();
         Map<Long, Payment> paymentByBooking = paymentRepository.findByBookingIdIn(ids).stream()
                 .collect(Collectors.toMap(payment -> payment.getBooking().getId(), Function.identity()));
+        Map<Long, Review> reviewByBooking = reviewRepository.findByBookingIdIn(ids).stream()
+                .collect(Collectors.toMap(review -> review.getBooking().getId(), Function.identity()));
 
         return bookings.stream()
-                .map(b -> BookingResponse.from(b, paymentByBooking.get(b.getId()), now))
+                .map(b -> BookingResponse.from(b, paymentByBooking.get(b.getId()), reviewByBooking.get(b.getId()),
+                        b.canBeReviewedAt(now, daysToReview), now))
                 .toList();
     }
 
     @Override
     @Transactional(readOnly = true)
     public BookingResponse myBooking(Long memberId, Long bookingId) {
+        LocalDateTime now = LocalDateTime.now(clock);
         Booking booking = memberBooking(memberId, bookingId);
         Payment payment = paymentRepository.findByBookingId(bookingId).orElse(null);
-        return BookingResponse.from(booking, payment, LocalDateTime.now(clock));
+        Review review = reviewRepository.findByBookingIdIn(List.of(bookingId)).stream().findFirst().orElse(null);
+        return BookingResponse.from(booking, payment, review, booking.canBeReviewedAt(now, daysToReview), now);
     }
 
     /**
