@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mycompany.gymbooking.notification.NotificationSender;
 import com.mycompany.gymbooking.security.Totp;
 import com.mycompany.gymbooking.support.CapturingNotificationSender;
+import com.mycompany.gymbooking.support.FakeGoogle;
 import com.mycompany.gymbooking.support.FakeStripe;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -31,7 +32,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Starts the full application once per test class, over HTTP, with an in-memory H2 database (one per
- * class), FakeStripe instead of Stripe and CapturingNotificationSender instead of email. Tests use
+ * class), FakeStripe instead of Stripe, FakeGoogle instead of Google's sign-in keys and
+ * CapturingNotificationSender instead of email. Tests use
  * their own members and time slots so they stay independent within a class.
  */
 abstract class ApiTestBase {
@@ -48,6 +50,7 @@ abstract class ApiTestBase {
     /** The admin's authenticator-app secret, set up by the first adminLogin() of each test class. */
     protected static String adminSecret;
     protected static FakeStripe stripe;
+    protected static FakeGoogle google;
     protected static CapturingNotificationSender mailbox;
     protected static ConfigurableApplicationContext backend;
     protected static String baseUrl;
@@ -68,6 +71,7 @@ abstract class ApiTestBase {
     @BeforeAll
     static void startBackend() throws Exception {
         stripe = FakeStripe.start();
+        google = FakeGoogle.start();
         mailbox = new CapturingNotificationSender();
 
         byte[] jwtSecret = new byte[64];
@@ -91,6 +95,8 @@ abstract class ApiTestBase {
                         "--app.payments.stripe.api-base=" + stripe.baseUrl(),
                         "--app.payments.stripe.webhook-secret=" + WEBHOOK_SECRET,
                         "--app.admin.initial-password=" + ADMIN_PASSWORD,
+                        "--app.auth.google.client-id=" + FakeGoogle.CLIENT_ID,
+                        "--app.auth.google.jwks-uri=" + google.keysUrl(),
                         "--spring.main.banner-mode=off");
         baseUrl = "http://localhost:" + backend.getEnvironment().getProperty("local.server.port");
 
@@ -114,6 +120,9 @@ abstract class ApiTestBase {
         }
         if (stripe != null) {
             stripe.close();
+        }
+        if (google != null) {
+            google.close();
         }
     }
 

@@ -42,6 +42,14 @@ public abstract class User {
     @Column(nullable = false)
     private String passwordHash;
 
+    /** False for a member who signed up with Google and hasn't set a password yet. */
+    @Column(name = "password_set", nullable = false, columnDefinition = "boolean default true not null")
+    private boolean passwordSet = true;
+
+    /** The Google account's permanent ID ("sub"), once the user has signed in with Google. */
+    @Column(unique = true)
+    private String googleSubject;
+
     @Column(nullable = false)
     private boolean verified = false;
 
@@ -229,6 +237,29 @@ public abstract class User {
 
     public void changePasswordHash(String newPasswordHash) {
         this.passwordHash = newPasswordHash;
+        this.passwordSet = true;
+    }
+
+    /**
+     * Leaves the account without a usable password: the hash of a random value nobody knows. The
+     * user can set a real one with "Forgot password".
+     */
+    public void removePassword(String unusableHash) {
+        this.passwordHash = unusableHash;
+        this.passwordSet = false;
+    }
+
+    public boolean isPasswordSet() {
+        return passwordSet;
+    }
+
+    public String getGoogleSubject() {
+        return googleSubject;
+    }
+
+    /** From now on this Google account logs in to this user, even if its email changes. */
+    public void linkGoogle(String subject) {
+        this.googleSubject = subject;
     }
 
     public int getTokenVersion() {

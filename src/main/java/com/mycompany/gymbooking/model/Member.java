@@ -14,6 +14,18 @@ public class Member extends User {
         super(fullName, email, phone, passwordHash);
     }
 
+    /**
+     * A member who signed up with Google: the email is already verified by Google, there is no
+     * password yet, and the phone number is asked for afterwards.
+     */
+    public static Member signedUpWithGoogle(String fullName, String email, String googleSubject, String unusablePasswordHash) {
+        Member member = new Member(fullName, email, null, unusablePasswordHash);
+        member.removePassword(unusablePasswordHash);
+        member.markVerified();
+        member.linkGoogle(googleSubject);
+        return member;
+    }
+
     @Override
     public Role getRole() {
         return Role.MEMBER;

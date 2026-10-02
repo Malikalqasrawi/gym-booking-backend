@@ -25,7 +25,7 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 
 | Area | Details |
 |---|---|
-| Accounts | Sign-up with email verification code, password reset by emailed code, change password, member / trainer / admin roles, lockout after 5 failed logins |
+| Accounts | Sign-up with email verification code or with Google (members), password reset by emailed code, change password, member / trainer / admin roles, lockout after 5 failed logins |
 | Sessions | 15-minute JWT access tokens renewed with rotating refresh tokens (30 days), logout per device or on all devices |
 | Two-factor login | Codes from an authenticator app (TOTP, RFC 6238), required for admins and optional for members and trainers, 8 one-time recovery codes, moving to a new phone |
 | Branches & trainers | 5 branches with coordinates and opening hours, 22 trainer profiles, filters (category, gender, max rate), weekly schedules |
@@ -99,6 +99,7 @@ sequenceDiagram
 - **Expiry is enforced on read.** `Booking.statusAt(now)` already reports overdue bookings as expired, and the scheduled job persists that every minute, one transaction per booking.
 - **Money.** Prices are `BigDecimal` in JOD, which has three decimal places (1 JOD = 1000 fils). Stripe can't charge JOD, so cards are charged the USD equivalent at the dinar's fixed peg (`ChargeConversion`), and receipts show both amounts. Charge currency and rate are configuration, so a JOD-capable provider needs no code change.
 - **Short access tokens, rotating refresh tokens.** Access tokens last 15 minutes. Refresh tokens are random, stored only as SHA-256 hashes, and replaced on every use. If a replaced token shows up again later, someone may have copied it, so all of that user's sessions end. Every token carries the user's token version: changing or resetting the password, "log out of all devices" and deactivation raise it, which ends all existing sessions at once without a token blocklist.
+- **Google sign-in without a Google library.** The app sends the ID token Google gave it, and `GoogleIdTokenVerifier` checks it with JJWT against Google's published keys (cached, fetched again when Google changes them): signature, issuer, audience (our client ID) and expiry. Accounts are tied to Google's permanent `sub` ID, not the email. A first sign-in links an existing member only when Google owns the address (Gmail, or a Google Workspace domain); otherwise the member logs in with the password. If someone had signed up with that address but never verified it, their password is removed. Trainers and admins keep their password logins, and two-factor authentication still applies after Google.
 - **Two-factor login in two steps.** A correct password for a two-factor account returns a challenge token instead of a session: a 10-minute JWT that only the code step accepts. The codes are computed in `Totp` (HMAC-SHA1 over 30-second steps, no library) and each code works once. Wrong codes count toward the same lock as wrong passwords, and entering the password again doesn't reset the count, so codes can't be guessed. Recovery codes are stored as SHA-256 hashes. An admin can't get a session without it, and admin sessions from before it was required are ended. The app's secret is stored as it is, because the server needs it to check codes; a production setup would encrypt it with a key from a secrets manager.
 - **Secrets stay out of the repo.** Configuration comes from a git-ignored `local.properties` or `.env`. A pre-commit hook blocks key-like strings, and the app refuses to start with live Stripe keys.
 
@@ -111,7 +112,7 @@ sequenceDiagram
 | Database | MySQL 8.4, Hibernate 6 |
 | Auth | JWT (JJWT), BCrypt |
 | Payments | Stripe REST API via `RestClient` |
-| Tests | JUnit 5, H2, fake Stripe HTTP server |
+| Tests | JUnit 5, H2, fake Stripe and Google key servers |
 | Delivery | Docker Compose, GitHub Actions |
 
 ## Getting started
@@ -160,13 +161,23 @@ Settings are in `src/main/resources/application.properties`. Secrets go in `loca
 | `spring.datasource.password` | `DB_PASSWORD` | Set by `create-db-user.sh` |
 | `app.jwt.secret` | `JWT_SECRET` | Required. Base64, 64+ bytes |
 | `app.admin.initial-password` | `ADMIN_PASSWORD` | First admin's password; random and logged once if empty |
+| `app.auth.google.client-id` | `GOOGLE_CLIENT_ID` | Optional. Google's "Web application" client ID; empty turns Google sign-in off |
 | `app.payments.stripe.secret-key` | `STRIPE_SECRET_KEY` | `sk_test_...` only |
 | `app.payments.stripe.publishable-key` | `STRIPE_PUBLISHABLE_KEY` | `pk_test_...`, passed to the app |
 | `app.payments.stripe.webhook-secret` | `STRIPE_WEBHOOK_SECRET` | Optional |
 | `app.payments.charge-currency` / `app.payments.jod-exchange-rate` | | `USD` / `1.41044` (fixed peg). Use `JOD` / `1` with a provider that supports dinars |
 | `app.notifications.mode` | | `console` (default) or `email` (uses `spring.mail.*`) |
 
-Without Stripe keys the service still starts, and the payment endpoints return `503 PAYMENTS_NOT_CONFIGURED`.
+Without Stripe keys the service still starts, and the payment endpoints return `503 PAYMENTS_NOT_CONFIGURED`. Without a Google client ID, `/api/auth/google` returns `503 GOOGLE_SIGN_IN_OFF`.
+
+### Google sign-in (optional)
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and open **Google Auth Platform**. Fill in **Branding** (app name, support email) and, under **Audience**, choose **External** and add your Google account as a test user.
+2. Under **Clients**, create three OAuth clients:
+   - **Web application**, with no origins or redirect URIs. Its client ID goes into `app.auth.google.client-id` here, and into the app as its server client ID.
+   - **Android**, with package name `com.malik.gym_booking` and the SHA-1 of your debug key: `keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android`
+   - **iOS**, with bundle ID `com.malik.gymBooking`.
+3. Set up the app as described in its README.
 
 ### Stripe test mode
 
@@ -197,6 +208,7 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST | `/api/auth/signup` | `fullName, email, phone, password` | `201`, verification code sent by email |
 | POST | `/api/auth/verify` | `email, code` | `200 {token, refreshToken, user}` |
 | POST | `/api/auth/resend-code` | `email` | `200` |
+| POST | `/api/auth/google` | `idToken` | Members only. Same answers as login. A first sign-in links the member with the same email if Google owns it, or creates a member (no phone or password yet) |
 | POST | `/api/auth/login` | `email, password` | `200 {token, refreshToken, user}`, or for two-factor accounts `200 {twoFactor, challengeToken}` with `twoFactor` = `CODE_REQUIRED` or `SETUP_REQUIRED` (an admin without an authenticator app yet) |
 | POST | `/api/auth/login/2fa` | `challengeToken, code` | `200 {token, refreshToken, user}`. `code` is the 6-digit code from the app or a recovery code |
 | POST | `/api/auth/login/2fa/setup` | `challengeToken` | `200 {secret, otpauthUri}` for an admin's first login; show `otpauthUri` as a QR code |
@@ -206,7 +218,8 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST | `/api/auth/reset-password` | `email, code, password` | `200`; then log in with the new password. Also lifts a login lock |
 | POST | `/api/auth/refresh` | `refreshToken` | `200 {token, refreshToken, user}`; the old refresh token stops working |
 | POST | `/api/auth/logout` | `refreshToken` | `204`; ends this device's session |
-| GET | `/api/users/me` | | `200` current user, including `twoFactorEnabled` |
+| GET | `/api/users/me` | | `200` current user, including `twoFactorEnabled` and `hasPassword` (false after signing up with Google, until one is set with Forgot password) |
+| PUT | `/api/users/me/phone` | `phone` | `200` user, e.g. after signing up with Google |
 | POST | `/api/users/me/password` | `currentPassword, newPassword` | `200 {token, refreshToken, user}`; other devices are logged out |
 | POST | `/api/users/me/logout-all` | | `204`; ends every session on every device |
 | POST | `/api/users/me/2fa/setup` | `password, code?` | `200 {secret, otpauthUri}`. `code` (from the current app, or a recovery code) only when two-factor is already on, to move to a new phone |
@@ -312,7 +325,7 @@ src/main/java/com/mycompany/gymbooking
 ├── notification/   email senders and payment email listener
 ├── payment/        PaymentGateway, Stripe client, webhook verification
 ├── repository/     Spring Data repositories
-├── security/       JWT, two-factor codes (TOTP), rate limiting, security error handling
+├── security/       JWT, Google ID tokens, two-factor codes (TOTP), rate limiting, security error handling
 └── service/        business logic and the expiry job
 ```
 
@@ -322,7 +335,7 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-83 tests. They need no MySQL, network or Stripe account.
+95 tests. They need no MySQL, network, Stripe or Google account.
 
 | Test | Covers |
 |---|---|
@@ -334,8 +347,10 @@ mvn verify
 | `StripeWebhookVerifierTest` | Signature and timestamp checks |
 | `StripePaymentGatewayTest` | Requests sent to Stripe, idempotency, error handling |
 | `InMemoryRateLimiterTest` | Token bucket refill and `Retry-After` |
+| `GoogleIdTokenVerifierTest` | Google ID tokens: signature, audience, issuer, expiry, key rotation, Google being unreachable |
 | `TotpTest` | Authenticator codes against the RFC 6238 test values, Base32, clock drift, the QR code link |
 | `SessionApiTest` | End-to-end: refresh token rotation and reuse, logout, logout on all devices, change password |
+| `GoogleSignInApiTest` | End-to-end: Google sign-up and phone number, linking members, members only, unverified sign-ups, invalid tokens, two-factor after Google |
 | `TwoFactorApiTest` | End-to-end: admin setup at first login, codes and recovery codes, used codes, lockout, expired challenges, moving to a new phone, turning it off |
 | `GymBookingApiTest` | End-to-end over HTTP: auth, password reset, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages |
 | `AdminTrainerApiTest` | End-to-end: admin-only access, invite flow, validation, editing, schedules, deactivation with refunds, branches in use |
@@ -353,7 +368,7 @@ CI runs the test suite and a Docker Compose smoke test on every push and pull re
 - [x] Admin: all bookings, gym cancellations, blocked times, branch management
 - [x] Refresh tokens, logout on all devices, change password
 - [x] Two-factor authentication with an authenticator app
-- [ ] Google sign-in
+- [x] Google sign-in for members
 
 ## License
 

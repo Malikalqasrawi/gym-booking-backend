@@ -11,7 +11,8 @@ public record UserResponse(
         String phone,
         Role role,
         String title,
-        boolean twoFactorEnabled
+        boolean twoFactorEnabled,
+        boolean hasPassword
 ) {
 
     public static UserResponse from(User user) {
@@ -22,7 +23,8 @@ public record UserResponse(
                 user.getPhone(),
                 user.getRole(),
                 user.getDisplayTitle(),
-                user.isTwoFactorEnabled()
+                user.isTwoFactorEnabled(),
+                user.isPasswordSet()
         );
     }
 }
