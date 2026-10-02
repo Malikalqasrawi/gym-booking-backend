@@ -20,6 +20,7 @@ import com.mycompany.gymbooking.payment.GatewayPaymentStatus;
 import com.mycompany.gymbooking.payment.GatewayRefund;
 import com.mycompany.gymbooking.payment.PaymentGateway;
 import com.mycompany.gymbooking.payment.PaymentOrder;
+import com.mycompany.gymbooking.payment.RefundReason;
 import com.mycompany.gymbooking.payment.StripeWebhookVerifier;
 import com.mycompany.gymbooking.repository.BookingRepository;
 import com.mycompany.gymbooking.repository.PaymentRepository;
@@ -140,7 +141,7 @@ public class PaymentServiceImpl implements PaymentService {
             switch (gatewayPayment.status()) {
                 case SUCCEEDED -> settle(booking, payment, gatewayPayment, now);
                 case PROCESSING -> throw new ConflictException("PAYMENT_PROCESSING",
-                        "Your bank is still processing the payment. Pull down to refresh in a minute.");
+                        "Your bank is still processing the payment. Try again in a few minutes. You won't be charged twice.");
                 default -> throw new ConflictException("PAYMENT_NOT_COMPLETED",
                         "The payment wasn't completed, so nothing was charged. You can try again.");
             }
@@ -198,14 +199,14 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public Payment refundCancelledBooking(Booking booking, LocalDateTime now) {
+    public Payment refundCancelledBooking(Booking booking, RefundReason reason, LocalDateTime now) {
         Payment payment = paymentRepository.findByBookingId(booking.getId())
                 .filter(p -> p.getStatus() == PaymentStatus.SUCCEEDED)
                 .orElseThrow(() -> new IllegalStateException("Booking " + booking.getId() + " is PAID but has no completed payment"));
 
         GatewayRefund refund = gateway.refund(payment.getProviderPaymentId(), idempotencyKey("refund", payment));
         payment.markRefunded(refund.id(), now);
-        events.publishEvent(refundedEvent(booking, payment, false));
+        events.publishEvent(refundedEvent(booking, payment, reason));
         log.info("Booking {} cancelled: refunded {} {} ({})", booking.getId(), payment.getAmount(), payment.getCurrency(), refund.id());
         return payment;
     }
@@ -233,7 +234,7 @@ public class PaymentServiceImpl implements PaymentService {
         String status = booking.statusAt(now).name().toLowerCase();
         GatewayRefund refund = gateway.refund(payment.getProviderPaymentId(), idempotencyKey("refund", payment));
         payment.markRefunded(refund.id(), now);
-        events.publishEvent(refundedEvent(booking, payment, true));
+        events.publishEvent(refundedEvent(booking, payment, RefundReason.PAID_TOO_LATE));
         log.info("Booking {} was {} when its payment arrived: refunded ({})", booking.getId(), status, refund.id());
         throw new ConflictException("PAID_TOO_LATE",
                 "This booking had already " + (status.equals("expired") ? "expired" : "been " + status)
@@ -274,7 +275,7 @@ public class PaymentServiceImpl implements PaymentService {
                 booking.getRefundableUntil());
     }
 
-    private BookingRefundedEvent refundedEvent(Booking booking, Payment payment, boolean paidTooLate) {
+    private BookingRefundedEvent refundedEvent(Booking booking, Payment payment, RefundReason reason) {
         return new BookingRefundedEvent(
                 booking.getId(),
                 booking.getMember().getEmail(),
@@ -284,6 +285,7 @@ public class PaymentServiceImpl implements PaymentService {
                 payment.getAmount(),
                 payment.getCurrency(),
                 payment.getMethodLabel(),
-                paidTooLate);
+                reason,
+                booking.getCancellationNote());
     }
 }

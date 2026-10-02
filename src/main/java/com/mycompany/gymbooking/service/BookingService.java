@@ -26,6 +26,12 @@ public interface BookingService {
 
     BookingResponse reject(Long trainerId, Long bookingId, String message);
 
+    /**
+     * Cancels all of a trainer's bookings that haven't started, refunding paid ones in full, and
+     * emails the members. Joins the caller's transaction.
+     */
+    GymCancellations cancelUpcomingForTrainer(Long trainerId, String note);
+
     /** Marks unanswered requests and unpaid accepted bookings as EXPIRED. Returns the number expired. */
     int expireOverdue();
 }

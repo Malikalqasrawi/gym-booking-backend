@@ -6,7 +6,9 @@ import com.mycompany.gymbooking.exception.BadRequestException;
 import com.mycompany.gymbooking.exception.ConflictException;
 import com.mycompany.gymbooking.exception.NotFoundException;
 import com.mycompany.gymbooking.model.Branch;
+import com.mycompany.gymbooking.repository.BookingRepository;
 import com.mycompany.gymbooking.repository.BranchRepository;
+import com.mycompany.gymbooking.repository.TrainerRepository;
 import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,9 +18,15 @@ import org.springframework.transaction.annotation.Transactional;
 public class BranchServiceImpl implements BranchService {
 
     private final BranchRepository branchRepository;
+    private final TrainerRepository trainerRepository;
+    private final BookingRepository bookingRepository;
 
-    public BranchServiceImpl(BranchRepository branchRepository) {
+    public BranchServiceImpl(BranchRepository branchRepository,
+                             TrainerRepository trainerRepository,
+                             BookingRepository bookingRepository) {
         this.branchRepository = branchRepository;
+        this.trainerRepository = trainerRepository;
+        this.bookingRepository = bookingRepository;
     }
 
     @Override
@@ -91,6 +99,11 @@ public class BranchServiceImpl implements BranchService {
     @Transactional
     public void delete(Long id) {
         Branch branch = getBranchOrThrow(id);
+        // Bookings keep their branch for the booking history, so a branch that was ever used stays.
+        if (trainerRepository.existsByBranchId(id) || bookingRepository.existsByBranchId(id)) {
+            throw new ConflictException("BRANCH_IN_USE",
+                    "This branch has trainers or bookings, so it can't be deleted.");
+        }
         branchRepository.delete(branch);
     }
 

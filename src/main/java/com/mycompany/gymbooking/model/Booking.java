@@ -101,6 +101,15 @@ public class Booking {
 
     private LocalDateTime cancelledAt;
 
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(length = 10)
+    private CancelledBy cancelledBy;
+
+    /** Shown to the member when the gym cancels. */
+    @Column(length = 300)
+    private String cancellationNote;
+
     @Version
     private Long version;
 
@@ -210,6 +219,25 @@ public class Booking {
         }
         this.status = BookingStatus.CANCELLED;
         this.cancelledAt = now;
+        this.cancelledBy = CancelledBy.MEMBER;
+    }
+
+    /**
+     * Cancellation by the gym, e.g. when a trainer leaves. Allowed until the session starts, even
+     * inside the window in which members can no longer cancel a paid session.
+     */
+    public void cancelByGym(String note, LocalDateTime now) {
+        BookingStatus current = statusAt(now);
+        if (!SLOT_HOLDING.contains(current)) {
+            throw new ConflictException("BOOKING_NOT_CANCELLABLE", "This booking is already " + label(current) + ".");
+        }
+        if (!now.isBefore(getStartsAt())) {
+            throw new ConflictException("SESSION_STARTED", "This session has already started.");
+        }
+        this.status = BookingStatus.CANCELLED;
+        this.cancelledAt = now;
+        this.cancelledBy = CancelledBy.GYM;
+        this.cancellationNote = clean(note);
     }
 
     public void requirePayable(LocalDateTime now) {
@@ -250,8 +278,9 @@ public class Booking {
         }
     }
 
+    /** Status as the app shows it: REJECTED reads "declined" there. */
     private static String label(BookingStatus status) {
-        return status.name().toLowerCase();
+        return status == BookingStatus.REJECTED ? "declined" : status.name().toLowerCase();
     }
 
     private static String clean(String text) {
@@ -324,5 +353,13 @@ public class Booking {
 
     public LocalDateTime getCancelledAt() {
         return cancelledAt;
+    }
+
+    public CancelledBy getCancelledBy() {
+        return cancelledBy;
+    }
+
+    public String getCancellationNote() {
+        return cancellationNote;
     }
 }

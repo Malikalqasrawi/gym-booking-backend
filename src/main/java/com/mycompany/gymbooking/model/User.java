@@ -77,6 +77,11 @@ public abstract class User {
 
     public abstract Role getRole();
 
+    /** Inactive accounts can't log in and their tokens are rejected. */
+    public boolean isActive() {
+        return true;
+    }
+
     /** Human-readable title shown in the app. */
     public abstract String getDisplayTitle();
 
@@ -105,6 +110,10 @@ public abstract class User {
 
     public boolean hasNoCodeAttemptsLeft(int maxAttempts) {
         return verificationAttempts >= maxAttempts;
+    }
+
+    public LocalDateTime getVerificationCodeExpiresAt() {
+        return verificationCodeExpiresAt;
     }
 
     public boolean isVerificationCodeExpired(LocalDateTime now) {
@@ -164,6 +173,11 @@ public abstract class User {
 
     public String getEmail() {
         return email;
+    }
+
+    /** Tokens identify users by email, so existing sessions end when it changes. */
+    public void changeEmail(String email) {
+        this.email = email;
     }
 
     public String getPhone() {

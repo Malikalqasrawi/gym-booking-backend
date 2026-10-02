@@ -2,122 +2,25 @@ package com.mycompany.gymbooking;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.mycompany.gymbooking.notification.NotificationSender;
-import com.mycompany.gymbooking.support.CapturingNotificationSender;
-import com.mycompany.gymbooking.support.FakeStripe;
 import java.math.BigDecimal;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
 import java.sql.Timestamp;
-import java.time.DayOfWeek;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.context.support.GenericApplicationContext;
-import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * End-to-end tests over HTTP against the full application, with in-memory H2 instead of MySQL,
- * FakeStripe instead of Stripe and CapturingNotificationSender instead of email. The application
- * starts once per class, so each test uses its own members and time slots to stay independent.
- */
-class GymBookingApiTest {
-
-    private static final String WEBHOOK_SECRET = "whsec_test_only";
-    private static final ZoneId AMMAN = ZoneId.of("Asia/Amman");
-    private static final ObjectMapper JSON = new ObjectMapper();
-    private static final HttpClient HTTP = HttpClient.newHttpClient();
-    private static final AtomicInteger MEMBER_NUMBER = new AtomicInteger();
-
-    private static FakeStripe stripe;
-    private static CapturingNotificationSender mailbox;
-    private static ConfigurableApplicationContext backend;
-    private static String baseUrl;
-
-    private static long sara;
-    private static long lina;
-    private static String saraToken;
-    private static String linaToken;
-    /** Next Wednesday. Seeded schedules: Sara 08:00-16:00, Lina 07:00-13:00 and 17:00-21:00. */
-    private static LocalDate wednesday;
-
-    private record Reply(int status, JsonNode body) {
-        String code() {
-            return body.path("code").asText();
-        }
-    }
-
-    @BeforeAll
-    static void startBackend() throws Exception {
-        stripe = FakeStripe.start();
-        mailbox = new CapturingNotificationSender();
-
-        byte[] jwtSecret = new byte[64];
-        new SecureRandom().nextBytes(jwtSecret);
-
-        backend = new SpringApplicationBuilder(Gymbooking.class)
-                // Notifications mode "test" disables the real senders, leaving only the capturing one
-                .initializers(context -> ((GenericApplicationContext) context)
-                        .registerBean(NotificationSender.class, () -> mailbox))
-                .run(
-                        "--server.port=0",
-                        "--spring.datasource.url=jdbc:h2:mem:api-test;MODE=MySQL;DB_CLOSE_DELAY=-1",
-                        "--spring.datasource.username=sa",
-                        "--spring.datasource.password=",
-                        "--app.jwt.secret=" + Base64.getEncoder().encodeToString(jwtSecret),
-                        "--app.notifications.mode=test",
-                        "--app.rate-limit.auth-per-minute=100000",
-                        "--app.rate-limit.general-per-minute=100000",
-                        "--app.payments.stripe.secret-key=" + FakeStripe.SECRET_KEY,
-                        "--app.payments.stripe.publishable-key=pk_test_fake",
-                        "--app.payments.stripe.api-base=" + stripe.baseUrl(),
-                        "--app.payments.stripe.webhook-secret=" + WEBHOOK_SECRET,
-                        "--spring.main.banner-mode=off");
-        baseUrl = "http://localhost:" + backend.getEnvironment().getProperty("local.server.port");
-
-        saraToken = login("sara.trainer@gym.com", "Trainer1234");
-        linaToken = login("lina.trainer@gym.com", "Trainer1234");
-        String member = newMember();
-        sara = trainerId(member, "Abdoun Branch", "Sara Haddad");
-        lina = trainerId(member, "Sweifieh Branch", "Lina Nasser");
-
-        LocalDate day = LocalDate.now(AMMAN).plusDays(1);
-        while (day.getDayOfWeek() != DayOfWeek.WEDNESDAY) {
-            day = day.plusDays(1);
-        }
-        wednesday = day;
-    }
-
-    @AfterAll
-    static void stopBackend() {
-        if (backend != null) {
-            backend.close();
-        }
-        if (stripe != null) {
-            stripe.close();
-        }
-    }
+/** End-to-end tests of sign-up, bookings, payments and access rules. */
+class GymBookingApiTest extends ApiTestBase {
 
     @Test
     @DisplayName("health check is public")
@@ -152,7 +55,9 @@ class GymBookingApiTest {
     @Test
     @DisplayName("roles: no token → 401, trainer on member endpoints → 403, member on trainer endpoints → 403")
     void rolesAreEnforced() throws Exception {
-        assertEquals(401, call("GET", "/api/bookings/mine", null, null).status());
+        Reply noToken = call("GET", "/api/bookings/mine", null, null);
+        assertEquals(401, noToken.status());
+        assertEquals("Please log in first", noToken.body().path("message").asText());
         assertEquals(403, call("GET", "/api/bookings/mine", saraToken, null).status());
         assertEquals(403, call("GET", "/api/trainer/requests", newMember(), null).status());
     }
@@ -337,23 +242,6 @@ class GymBookingApiTest {
         assertEquals("TOO_LATE_TO_CANCEL", cancel.code());
     }
 
-    private static Reply call(String method, String path, String token, Object body) throws Exception {
-        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .header("Accept", "application/json");
-        if (token != null) {
-            request.header("Authorization", "Bearer " + token);
-        }
-        if (body != null || method.equals("POST")) {
-            request.header("Content-Type", "application/json")
-                    .method(method, HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body == null ? Map.of() : body)));
-        } else {
-            request.method(method, HttpRequest.BodyPublishers.noBody());
-        }
-        HttpResponse<String> response = HTTP.send(request.build(), HttpResponse.BodyHandlers.ofString());
-        String text = response.body();
-        return new Reply(response.statusCode(), text == null || text.isBlank() ? JSON.createObjectNode() : JSON.readTree(text));
-    }
-
     private static Reply webhook(String payload, String signature) throws Exception {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + "/api/payments/stripe/webhook"))
                 .header("Content-Type", "application/json")
@@ -369,74 +257,5 @@ class GymBookingApiTest {
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
         return HexFormat.of().formatHex(mac.doFinal((timestamp + "." + payload).getBytes(StandardCharsets.UTF_8)));
-    }
-
-    private static String login(String email, String password) throws Exception {
-        Reply reply = call("POST", "/api/auth/login", null, Map.of("email", email, "password", password));
-        assertEquals(200, reply.status(), "login " + email + ": " + reply.body());
-        return reply.body().path("token").asText();
-    }
-
-    /** Signs up and verifies a brand-new member; returns their login token. */
-    private static String newMember() throws Exception {
-        String email = "member" + MEMBER_NUMBER.incrementAndGet() + "@test.com";
-        Reply signUp = call("POST", "/api/auth/signup", null, Map.of(
-                "fullName", "Test Member", "email", email, "phone", "0790000000", "password", "Secret1234"));
-        assertEquals(201, signUp.status(), signUp.body().toString());
-        Reply verified = call("POST", "/api/auth/verify", null,
-                Map.of("email", email, "code", mailbox.latestVerificationCode(email)));
-        assertEquals(200, verified.status(), verified.body().toString());
-        return verified.body().path("token").asText();
-    }
-
-    private static String memberEmail(String token) throws Exception {
-        return call("GET", "/api/users/me", token, null).body().path("email").asText();
-    }
-
-    private static long trainerId(String token, String branchName, String trainerName) throws Exception {
-        for (JsonNode branch : call("GET", "/api/branches", token, null).body()) {
-            if (branch.path("name").asText().equals(branchName)) {
-                for (JsonNode trainer : call("GET", "/api/branches/" + branch.path("id").asLong() + "/trainers", token, null).body()) {
-                    if (trainer.path("fullName").asText().equals(trainerName)) {
-                        return trainer.path("id").asLong();
-                    }
-                }
-            }
-        }
-        throw new AssertionError(trainerName + " not found at " + branchName);
-    }
-
-    private static Reply book(String member, long trainer, String startTime) throws Exception {
-        return call("POST", "/api/bookings", member, Map.of(
-                "trainerId", trainer, "date", wednesday.toString(), "startTime", startTime, "durationMinutes", 60));
-    }
-
-    private static long acceptedBooking(String member, long trainer, String startTime) throws Exception {
-        Reply booked = book(member, trainer, startTime);
-        assertEquals(201, booked.status(), booked.body().toString());
-        long id = booked.body().path("id").asLong();
-        String trainerToken = trainer == sara ? saraToken : linaToken;
-        assertEquals(200, call("POST", "/api/trainer/requests/" + id + "/accept", trainerToken, null).status());
-        return id;
-    }
-
-    private static long paidBooking(String member, long trainer, String startTime) throws Exception {
-        long id = acceptedBooking(member, trainer, startTime);
-        String paymentIntent = paymentIntentOf(call("POST", "/api/bookings/" + id + "/payment", member, null));
-        stripe.pay(paymentIntent, "visa", "4242");
-        Reply paid = call("POST", "/api/bookings/" + id + "/payment/confirm", member, null);
-        assertEquals("PAID", paid.body().path("status").asText(), paid.body().toString());
-        return id;
-    }
-
-    /** Extracts the PaymentIntent id, the part of the client secret before "_secret_". */
-    private static String paymentIntentOf(Reply start) {
-        String clientSecret = start.body().path("clientSecret").asText();
-        assertNotNull(clientSecret);
-        return clientSecret.substring(0, clientSecret.indexOf("_secret_"));
-    }
-
-    private static JdbcTemplate jdbc() {
-        return backend.getBean(JdbcTemplate.class);
     }
 }

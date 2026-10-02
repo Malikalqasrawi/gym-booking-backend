@@ -167,7 +167,8 @@ public class StripePaymentGateway implements PaymentGateway {
             return request.get();
         } catch (ResourceAccessException e) {
             log.error("Could not reach Stripe: {}", e.getMessage());
-            throw new PaymentProviderException("Couldn't reach Stripe. Check the internet connection and try again.");
+            throw new PaymentProviderException(
+                    "The payment service can't be reached right now. Please try again in a few minutes.");
         }
     }
 

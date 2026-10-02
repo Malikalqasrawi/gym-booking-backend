@@ -5,8 +5,7 @@ import java.math.BigDecimal;
 /**
  * Published when a booking payment is refunded.
  *
- * @param paidTooLate true if the payment arrived after the booking had expired or been cancelled;
- *                    false if the member cancelled a paid session in time
+ * @param note the gym's cancellation note, if any
  */
 public record BookingRefundedEvent(Long bookingId,
                                    String memberEmail,
@@ -16,5 +15,6 @@ public record BookingRefundedEvent(Long bookingId,
                                    BigDecimal amount,
                                    String currency,
                                    String paymentMethod,
-                                   boolean paidTooLate) {
+                                   RefundReason reason,
+                                   String note) {
 }

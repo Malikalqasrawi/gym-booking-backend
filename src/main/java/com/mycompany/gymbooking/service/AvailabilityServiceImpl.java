@@ -71,7 +71,9 @@ public class AvailabilityServiceImpl implements AvailabilityService {
         }
 
         Trainer trainer = trainerRepository.findById(trainerId)
-                .orElseThrow(() -> new NotFoundException("TRAINER_NOT_FOUND", "No trainer with id " + trainerId));
+                .filter(Trainer::isBookable)
+                .orElseThrow(() -> new NotFoundException("TRAINER_NOT_FOUND",
+                        "This trainer is no longer available. Please pick another one."));
 
         Branch branch = trainer.getBranch();
         if (branch == null) {

@@ -13,6 +13,7 @@ public final class CapturingNotificationSender implements NotificationSender {
     }
 
     private static final Pattern CODE = Pattern.compile("verification code is: (\\d{6})");
+    private static final Pattern INVITE_CODE = Pattern.compile("invite code is: (\\d{6})");
 
     private final List<Email> sent = new CopyOnWriteArrayList<>();
 
@@ -30,13 +31,31 @@ public final class CapturingNotificationSender implements NotificationSender {
     }
 
     public String latestVerificationCode(String recipient) {
+        return latestMatch(recipient, CODE, "verification code");
+    }
+
+    public String latestInviteCode(String recipient) {
+        return latestMatch(recipient, INVITE_CODE, "invite code");
+    }
+
+    public String latestBody(String recipient, String subjectStart) {
         List<Email> emails = to(recipient);
         for (int i = emails.size() - 1; i >= 0; i--) {
-            Matcher matcher = CODE.matcher(emails.get(i).body());
+            if (emails.get(i).subject().startsWith(subjectStart)) {
+                return emails.get(i).body();
+            }
+        }
+        throw new AssertionError("No \"" + subjectStart + "\" email was sent to " + recipient);
+    }
+
+    private String latestMatch(String recipient, Pattern pattern, String what) {
+        List<Email> emails = to(recipient);
+        for (int i = emails.size() - 1; i >= 0; i--) {
+            Matcher matcher = pattern.matcher(emails.get(i).body());
             if (matcher.find()) {
                 return matcher.group(1);
             }
         }
-        throw new AssertionError("No verification code was emailed to " + recipient);
+        throw new AssertionError("No " + what + " was emailed to " + recipient);
     }
 }

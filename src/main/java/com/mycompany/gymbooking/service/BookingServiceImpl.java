@@ -12,6 +12,7 @@ import com.mycompany.gymbooking.model.Member;
 import com.mycompany.gymbooking.model.Payment;
 import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.notification.NotificationSender;
+import com.mycompany.gymbooking.payment.RefundReason;
 import com.mycompany.gymbooking.repository.BookingRepository;
 import com.mycompany.gymbooking.repository.PaymentRepository;
 import com.mycompany.gymbooking.repository.TrainerRepository;
@@ -94,9 +95,10 @@ public class BookingServiceImpl implements BookingService {
 
         // Pessimistic lock on the trainer serializes concurrent requests for them, preventing double booking.
         Trainer trainer = trainerRepository.findLockedById(request.trainerId())
-                .orElseThrow(() -> new NotFoundException("TRAINER_NOT_FOUND", "No trainer with id " + request.trainerId()));
-        if (!trainer.hasHourlyRate()) {
-            throw new ConflictException("TRAINER_NOT_BOOKABLE", "This trainer isn't taking bookings yet.");
+                .orElseThrow(() -> new NotFoundException("TRAINER_NOT_FOUND",
+                        "This trainer is no longer available. Please pick another one."));
+        if (!trainer.isBookable()) {
+            throw new ConflictException("TRAINER_NOT_BOOKABLE", "This trainer isn't taking bookings.");
         }
 
         // Re-validate the slot with the same rules that produced the offered times.
@@ -183,13 +185,54 @@ public class BookingServiceImpl implements BookingService {
 
         // If the Stripe refund fails, the exception rolls back the cancellation as well.
         Payment payment = wasPaid
-                ? paymentService.refundCancelledBooking(booking, now)
+                ? paymentService.refundCancelledBooking(booking, RefundReason.MEMBER_CANCELLED, now)
                 : paymentRepository.findByBookingId(bookingId).orElse(null);
 
         notificationSender.send(booking.getTrainer().getEmail(), "Session cancelled",
                 booking.getMember().getFullName() + " cancelled the session on " + BookingTexts.when(booking) + "."
                         + (wasPaid ? " The member was refunded." : ""));
         return BookingResponse.from(booking, payment, now);
+    }
+
+    @Override
+    @Transactional
+    public GymCancellations cancelUpcomingForTrainer(Long trainerId, String note) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        int cancelled = 0;
+        int refunded = 0;
+        for (Long id : bookingRepository.findIdsByTrainerFrom(trainerId, Booking.SLOT_HOLDING, now.toLocalDate())) {
+            Booking booking = bookingRepository.findLockedById(id).orElseThrow();
+            if (!booking.holdsSlotAt(now) || !booking.getStartsAt().isAfter(now)) {
+                continue;   // started already, or overdue and about to expire
+            }
+            if (cancelByGym(booking, note, now)) {
+                refunded++;
+            }
+            cancelled++;
+        }
+        if (cancelled > 0) {
+            log.info("Cancelled {} booking(s) of trainer {} ({} refunded)", cancelled, trainerId, refunded);
+        }
+        return new GymCancellations(cancelled, refunded);
+    }
+
+    /**
+     * Cancels a locked booking on the gym's side and tells the member. A paid booking is refunded in
+     * full, and the refund email doubles as the cancellation notice. Returns true if it was refunded.
+     */
+    private boolean cancelByGym(Booking booking, String note, LocalDateTime now) {
+        boolean wasPaid = booking.statusAt(now) == BookingStatus.PAID;
+        booking.cancelByGym(note, now);
+        if (wasPaid) {
+            paymentService.refundCancelledBooking(booking, RefundReason.GYM_CANCELLED, now);
+        } else {
+            notificationSender.send(booking.getMember().getEmail(), "Your session was cancelled",
+                    "We're sorry, but the gym had to cancel your session with " + booking.getTrainer().getFullName()
+                            + " on " + BookingTexts.when(booking) + "."
+                            + (booking.getCancellationNote() == null ? "" : "\nReason: " + booking.getCancellationNote())
+                            + "\nNothing was charged. You can book another time in the app.");
+        }
+        return wasPaid;
     }
 
     @Override

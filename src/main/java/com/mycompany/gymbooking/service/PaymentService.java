@@ -4,6 +4,7 @@ import com.mycompany.gymbooking.dto.BookingResponse;
 import com.mycompany.gymbooking.dto.PaymentStartResponse;
 import com.mycompany.gymbooking.model.Booking;
 import com.mycompany.gymbooking.model.Payment;
+import com.mycompany.gymbooking.payment.RefundReason;
 import java.time.LocalDateTime;
 
 /**
@@ -19,6 +20,6 @@ public interface PaymentService {
 
     void handleStripeWebhook(String payload, String signatureHeader);
 
-    /** Refunds a PAID booking the member cancelled within the refund window. Returns the refunded payment. */
-    Payment refundCancelledBooking(Booking booking, LocalDateTime now);
+    /** Refunds a cancelled booking that was PAID, in full. Returns the refunded payment. */
+    Payment refundCancelledBooking(Booking booking, RefundReason reason, LocalDateTime now);
 }

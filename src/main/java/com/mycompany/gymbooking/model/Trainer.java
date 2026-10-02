@@ -13,11 +13,15 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OrderColumn;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Trainer account. Trainers are created by an admin, not through sign-up. */
+/**
+ * Trainer account. Trainers are created by an admin and join by accepting an emailed invite code,
+ * which also sets their password.
+ */
 @Entity
 @DiscriminatorValue("TRAINER")
 public class Trainer extends User {
@@ -61,6 +65,9 @@ public class Trainer extends User {
     @Column(name = "certification", length = 120)
     private List<String> certifications = new ArrayList<>();
 
+    /** Set while the trainer is deactivated. Nullable so existing rows need no backfill. */
+    private LocalDateTime deactivatedAt;
+
     protected Trainer() {
     }
 
@@ -80,6 +87,35 @@ public class Trainer extends User {
     @Override
     public String getDisplayTitle() {
         return "Trainer · " + specialty;
+    }
+
+    @Override
+    public boolean isActive() {
+        return deactivatedAt == null;
+    }
+
+    public TrainerStatus getStatus() {
+        if (!isActive()) {
+            return TrainerStatus.DEACTIVATED;
+        }
+        return isVerified() ? TrainerStatus.ACTIVE : TrainerStatus.INVITED;
+    }
+
+    /** Members can see and book only active trainers who joined and have a complete profile. */
+    public boolean isBookable() {
+        return getStatus() == TrainerStatus.ACTIVE && branch != null && hasHourlyRate() && hasProfile();
+    }
+
+    public void deactivate(LocalDateTime now) {
+        this.deactivatedAt = now;
+    }
+
+    public void reactivate() {
+        this.deactivatedAt = null;
+    }
+
+    public LocalDateTime getDeactivatedAt() {
+        return deactivatedAt;
     }
 
     public void assignToBranch(Branch branch) {
