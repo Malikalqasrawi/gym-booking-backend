@@ -57,7 +57,8 @@ class GymBookingApiTest extends ApiTestBase {
     @Test
     @DisplayName("forgot password: code by email, wrong codes count down, new password works, old one doesn't, lock lifted")
     void forgotPassword() throws Exception {
-        String email = memberEmail(newMember());
+        String oldSession = newMember();
+        String email = memberEmail(oldSession);
         for (int i = 0; i < 5; i++) {
             call("POST", "/api/auth/login", null, Map.of("email", email, "password", "Wrong1234"));
         }
@@ -86,6 +87,7 @@ class GymBookingApiTest extends ApiTestBase {
         assertEquals("INVALID_CREDENTIALS", call("POST", "/api/auth/login", null,
                 Map.of("email", email, "password", "Secret1234")).code());
         assertEquals(200, call("POST", "/api/auth/login", null, Map.of("email", email, "password", "NewPass123")).status());
+        assertEquals(401, call("GET", "/api/users/me", oldSession, null).status(), "sessions from before the reset end");
         assertEquals("INVALID_CODE", call("POST", "/api/auth/reset-password", null,
                 Map.of("email", email, "code", code, "password", "Other1234")).code(), "a code works once");
 

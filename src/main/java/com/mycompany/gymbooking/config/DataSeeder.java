@@ -10,8 +10,10 @@ import com.mycompany.gymbooking.repository.BranchRepository;
 import com.mycompany.gymbooking.repository.UserRepository;
 import com.mycompany.gymbooking.repository.WorkingHoursRepository;
 import java.math.BigDecimal;
+import java.security.SecureRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
@@ -25,21 +27,26 @@ import org.springframework.transaction.annotation.Transactional;
 public class DataSeeder implements CommandLineRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DataSeeder.class);
+    private static final String ADMIN_EMAIL = "admin@gym.com";
+    /** Demo trainers exist only for local testing; their shared password is in the README. */
     private static final String TRAINER_PASSWORD = "Trainer1234";
 
     private final UserRepository userRepository;
     private final BranchRepository branchRepository;
     private final WorkingHoursRepository workingHoursRepository;
     private final PasswordEncoder passwordEncoder;
+    private final String adminInitialPassword;
 
     public DataSeeder(UserRepository userRepository,
                       BranchRepository branchRepository,
                       WorkingHoursRepository workingHoursRepository,
-                      PasswordEncoder passwordEncoder) {
+                      PasswordEncoder passwordEncoder,
+                      @Value("${app.admin.initial-password:}") String adminInitialPassword) {
         this.userRepository = userRepository;
         this.branchRepository = branchRepository;
         this.workingHoursRepository = workingHoursRepository;
         this.passwordEncoder = passwordEncoder;
+        this.adminInitialPassword = adminInitialPassword;
     }
 
     @Override
@@ -74,14 +81,41 @@ public class DataSeeder implements CommandLineRunner {
         }
     }
 
+    /**
+     * Creates the first admin account with app.admin.initial-password (set in local.properties or
+     * .env). Without one, a random password is generated and printed once, so no working admin
+     * password is ever in the code.
+     */
     private void seedAdmin() {
-        if (userRepository.existsByEmailIgnoreCase("admin@gym.com")) {
+        if (userRepository.existsByEmailIgnoreCase(ADMIN_EMAIL)) {
             return;
         }
-        Admin admin = new Admin("Gym Admin", "admin@gym.com", "+962790000000", passwordEncoder.encode("Admin1234"));
+        boolean generated = adminInitialPassword.isBlank();
+        String password = generated ? randomPassword() : adminInitialPassword;
+        Admin admin = new Admin("Gym Admin", ADMIN_EMAIL, "+962790000000", passwordEncoder.encode(password));
         admin.markVerified();
         userRepository.save(admin);
-        log.info("Seeded admin: admin@gym.com / Admin1234");
+        if (generated) {
+            log.warn("Created the admin account {} with this generated password: {}  "
+                    + "It is shown only once. Change it in the app under Profile > Change password.", ADMIN_EMAIL, password);
+        } else {
+            log.info("Created the admin account {} with the password from app.admin.initial-password", ADMIN_EMAIL);
+        }
+    }
+
+    /** 16 characters from an alphabet without look-alikes (no 0/O, 1/l/I), always with a letter and a digit. */
+    private static String randomPassword() {
+        String letters = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
+        String digits = "23456789";
+        String all = letters + digits;
+        SecureRandom random = new SecureRandom();
+        StringBuilder password = new StringBuilder();
+        password.append(letters.charAt(random.nextInt(letters.length())));
+        password.append(digits.charAt(random.nextInt(digits.length())));
+        while (password.length() < 16) {
+            password.append(all.charAt(random.nextInt(all.length())));
+        }
+        return password.toString();
     }
 
     /**

@@ -22,7 +22,7 @@ class AdminTrainerApiTest extends ApiTestBase {
 
     @BeforeAll
     static void logInAdmin() throws Exception {
-        adminToken = login("admin@gym.com", "Admin1234");
+        adminToken = adminLogin();
     }
 
     @Test
@@ -204,6 +204,8 @@ class AdminTrainerApiTest extends ApiTestBase {
         Reply oldToken = call("GET", "/api/trainer/requests", trainerToken, null);
         assertEquals(401, oldToken.status(), "existing token stops working");
         assertEquals("Your session has ended. Please log in again.", oldToken.body().path("message").asText());
+        assertEquals("SESSION_ENDED", call("POST", "/api/auth/refresh", null,
+                Map.of("refreshToken", joined.body().path("refreshToken").asText())).code(), "and can't be renewed");
         assertEquals("ACCOUNT_DEACTIVATED", call("POST", "/api/auth/login", null,
                 Map.of("email", email, "password", "Boxing2026")).code());
         assertEquals(404, call("GET", "/api/trainers/" + id, payer, null).status());

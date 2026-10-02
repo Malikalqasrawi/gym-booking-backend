@@ -1,19 +1,25 @@
 package com.mycompany.gymbooking.model;
 
+import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.DiscriminatorColumn;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Inheritance;
 import jakarta.persistence.InheritanceType;
+import jakarta.persistence.JoinColumn;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 
-/** Common account, email-verification and login-lock state for all user types. */
+/** Common account, email-verification, login-lock and two-factor state for all user types. */
 @Entity
 @Table(name = "users")
 @Inheritance(strategy = InheritanceType.SINGLE_TABLE)
@@ -56,6 +62,30 @@ public abstract class User {
     private int failedLoginAttempts = 0;
 
     private LocalDateTime loginLockedUntil;
+
+    /**
+     * Stamped into every access and refresh token. Increasing it ends all of the user's sessions,
+     * e.g. after a password change or "log out of all devices".
+     */
+    @Column(name = "token_version", nullable = false, columnDefinition = "int default 0 not null")
+    private int tokenVersion = 0;
+
+    /** Secret shared with the user's authenticator app (Base32); null while two-factor login is off. */
+    @Column(length = 32)
+    private String twoFactorSecret;
+
+    /** A new secret during setup. It replaces twoFactorSecret once a code from it is confirmed. */
+    @Column(length = 32)
+    private String pendingTwoFactorSecret;
+
+    /** The 30-second step of the last accepted code, so each code works only once. */
+    private Long twoFactorLastStep;
+
+    /** SHA-256 hashes of the unused recovery codes, for logging in without the phone. */
+    @ElementCollection
+    @CollectionTable(name = "recovery_codes", joinColumns = @JoinColumn(name = "user_id"))
+    @Column(name = "code_hash", nullable = false, length = 64)
+    private Set<String> recoveryCodeHashes = new HashSet<>();
 
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -179,9 +209,10 @@ public abstract class User {
         return email;
     }
 
-    /** Tokens identify users by email, so existing sessions end when it changes. */
+    /** Ends existing sessions too, since they were opened under the old email. */
     public void changeEmail(String email) {
         this.email = email;
+        endAllSessions();
     }
 
     public String getPhone() {
@@ -198,6 +229,72 @@ public abstract class User {
 
     public void changePasswordHash(String newPasswordHash) {
         this.passwordHash = newPasswordHash;
+    }
+
+    public int getTokenVersion() {
+        return tokenVersion;
+    }
+
+    /** Invalidates every access and refresh token issued so far, on all devices. */
+    public void endAllSessions() {
+        tokenVersion++;
+    }
+
+    /** Whether this kind of account must log in with a code from an authenticator app (see Admin). */
+    public boolean requiresTwoFactor() {
+        return false;
+    }
+
+    public boolean isTwoFactorEnabled() {
+        return twoFactorSecret != null;
+    }
+
+    /** True for an account that must use two-factor login but hasn't set it up yet. */
+    public boolean needsTwoFactorSetup() {
+        return requiresTwoFactor() && !isTwoFactorEnabled();
+    }
+
+    public String getTwoFactorSecret() {
+        return twoFactorSecret;
+    }
+
+    public String getPendingTwoFactorSecret() {
+        return pendingTwoFactorSecret;
+    }
+
+    /** Keeps the new secret aside until the user proves their app has it; the current one still works. */
+    public void startTwoFactorSetup(String secret) {
+        this.pendingTwoFactorSecret = secret;
+    }
+
+    /** Switches to the pending secret and replaces any old recovery codes. */
+    public void enableTwoFactor(long confirmedStep, Collection<String> newRecoveryCodeHashes) {
+        this.twoFactorSecret = pendingTwoFactorSecret;
+        this.pendingTwoFactorSecret = null;
+        this.twoFactorLastStep = confirmedStep;
+        recoveryCodeHashes.clear();
+        recoveryCodeHashes.addAll(newRecoveryCodeHashes);
+    }
+
+    public void disableTwoFactor() {
+        this.twoFactorSecret = null;
+        this.pendingTwoFactorSecret = null;
+        this.twoFactorLastStep = null;
+        recoveryCodeHashes.clear();
+    }
+
+    /** True if a code from this step was already accepted. */
+    public boolean isTwoFactorStepUsed(long step) {
+        return twoFactorLastStep != null && step <= twoFactorLastStep;
+    }
+
+    public void recordTwoFactorStep(long step) {
+        this.twoFactorLastStep = step;
+    }
+
+    /** Uses up a recovery code; false if it isn't one of the unused codes. */
+    public boolean useRecoveryCode(String codeHash) {
+        return recoveryCodeHashes.remove(codeHash);
     }
 
     public boolean isVerified() {
