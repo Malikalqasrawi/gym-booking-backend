@@ -30,6 +30,7 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 | Availability | Free start times per trainer, date and duration (30/45/60/90 min), based on working hours, branch hours and existing bookings |
 | Bookings | Request, accept or decline, 24 h reply deadline, max 3 pending requests per member, cancellation rules |
 | Payments | Stripe PaymentIntents (test mode), 12 h payment window, email receipts, automatic refunds, signed webhooks |
+| Admin | Add trainers by email invite, edit profiles and weekly schedules, deactivate (cancels and refunds their upcoming bookings) or reactivate |
 | Hardening | Per-IP rate limiting, owner-scoped queries, optimistic and pessimistic locking, secrets kept out of the repo |
 
 ## Architecture
@@ -89,6 +90,7 @@ sequenceDiagram
 - **Side effects run after commit.** Emails are triggered by domain events (`BookingPaidEvent`, `BookingRefundedEvent`) handled with `@TransactionalEventListener(AFTER_COMMIT)`. A rolled-back transaction never sends an email, and a mail failure never fails a request.
 - **Plain REST instead of the Stripe SDK.** The API only needs three Stripe endpoints, so it calls them with Spring's `RestClient`. The integration tests then run against a local fake Stripe server instead of mocks.
 - **Time is injected.** Services use a `Clock` in the gym's timezone (`Asia/Amman`), so deadlines are deterministic in tests (`MutableClock`).
+- **Admins never know trainer passwords.** A trainer added by an admin gets an account with a random password and an emailed one-time invite code. Accepting the invite sets their own password. Deactivated trainers are hidden from members, their tokens stop working, and their upcoming bookings are cancelled by the gym with full refunds.
 - **Expiry is enforced on read.** `Booking.statusAt(now)` already reports overdue bookings as expired, and the scheduled job persists that every minute, one transaction per booking.
 - **Money.** Prices are `BigDecimal` in JOD, which has three decimal places (1 JOD = 1000 fils). Stripe can't charge JOD, so cards are charged the USD equivalent at the dinar's fixed peg (`ChargeConversion`), and receipts show both amounts. Charge currency and rate are configuration, so a JOD-capable provider needs no code change.
 - **Secrets stay out of the repo.** Configuration comes from a git-ignored `local.properties` or `.env`. A pre-commit hook blocks key-like strings, and the app refuses to start with live Stripe keys.
@@ -188,6 +190,7 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST | `/api/auth/verify` | `email, code` | `200 {token, user}` |
 | POST | `/api/auth/resend-code` | `email` | `200` |
 | POST | `/api/auth/login` | `email, password` | `200 {token, user}` |
+| POST | `/api/auth/accept-invite` | `email, code, password` | `200 {token, user}`; for trainers added by an admin |
 | GET | `/api/users/me` | | `200` current user |
 
 ### Branches and trainers
@@ -196,10 +199,23 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 |---|---|---|---|
 | GET | `/api/branches` | any | Optional `?city=` |
 | GET | `/api/branches/{id}` | any | |
-| POST / PUT / DELETE | `/api/branches[/{id}]` | admin | |
+| POST / PUT / DELETE | `/api/branches[/{id}]` | admin | A branch with trainers or bookings can't be deleted (`409 BRANCH_IN_USE`) |
 | GET | `/api/branches/{id}/trainers` | any | Optional `?category=&gender=&maxRate=` |
 | GET | `/api/trainers/{id}` | any | Profile and weekly schedule |
 | GET | `/api/trainers/{id}/availability?date=&duration=` | any | Free start times. `duration` is 30/45/60/90, `date` is within the next 14 days |
+
+### Admin: trainers
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/admin/trainers` | All trainers with status (`INVITED`, `ACTIVE`, `DEACTIVATED`), contact details, schedule and upcoming bookings |
+| GET | `/api/admin/trainers/{id}` | |
+| POST | `/api/admin/trainers` | Creates the trainer and emails an invite code (valid 7 days) |
+| PUT | `/api/admin/trainers/{id}` | Edits details; a new email address for an invited trainer gets a fresh invite |
+| PUT | `/api/admin/trainers/{id}/schedule` | `{blocks: [{dayOfWeek, startTime, endTime}]}` replaces the weekly schedule |
+| POST | `/api/admin/trainers/{id}/invite` | Sends a new invite code |
+| POST | `/api/admin/trainers/{id}/deactivate` | Optional `{reason}`, shown to members whose bookings are cancelled |
+| POST | `/api/admin/trainers/{id}/reactivate` | |
 
 ### Bookings
 
@@ -223,6 +239,8 @@ REQUESTED -> ACCEPTED -> PAID
     |            +-> EXPIRED (not paid within 12 h) / CANCELLED
     +-> REJECTED / EXPIRED (no answer within 24 h) / CANCELLED
 ```
+
+The gym can cancel any booking until it starts (for example when a trainer is deactivated); paid ones are always refunded in full.
 
 ### Payments
 
@@ -272,11 +290,12 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-52 tests. They need no MySQL, network or Stripe account.
+62 tests. They need no MySQL, network or Stripe account.
 
 | Test | Covers |
 |---|---|
-| `BookingTest` | Booking state machine, deadlines, expiry, 24 h cancellation rule |
+| `BookingTest` | Booking state machine, deadlines, expiry, 24 h cancellation rule, gym cancellations |
+| `TrainerTest` | Trainer status (invited, active, deactivated) and when a trainer is bookable |
 | `PaymentTest` | Payment status transitions |
 | `CurrencyUnitsTest` | Minor units per currency and amounts Stripe cannot charge |
 | `ChargeConversionTest` | JOD to USD conversion and rounding |
@@ -284,6 +303,7 @@ mvn verify
 | `StripePaymentGatewayTest` | Requests sent to Stripe, idempotency, error handling |
 | `InMemoryRateLimiterTest` | Token bucket refill and `Retry-After` |
 | `GymBookingApiTest` | End-to-end over HTTP: auth, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages |
+| `AdminTrainerApiTest` | End-to-end: admin-only access, invite flow, validation, editing, schedules, deactivation with refunds, branches in use |
 
 CI runs the test suite and a Docker Compose smoke test on every push and pull request.
 
@@ -293,7 +313,8 @@ CI runs the test suite and a Docker Compose smoke test on every push and pull re
 - [x] Branches, trainers, availability
 - [x] Booking requests, accept / decline, expiry
 - [x] Stripe payments, refunds, confirmation emails
-- [ ] Admin tools for branches, trainers and schedules
+- [x] Admin: trainer invites, profiles, weekly schedules, deactivation
+- [ ] Admin: all bookings, gym cancellations, blocked dates, branch management in the app
 - [ ] Refresh tokens and 2FA for admins
 - [ ] Google sign-in
 

@@ -5,6 +5,7 @@ import com.mycompany.gymbooking.dto.ErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
@@ -28,7 +29,11 @@ public class JsonSecurityErrorHandler implements AuthenticationEntryPoint, Acces
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response,
                          AuthenticationException authException) throws IOException {
-        write(response, 401, "UNAUTHORIZED", "Please log in first");
+        // A token was sent but rejected: it expired, is invalid, or its account was deactivated.
+        String auth = request.getHeader(HttpHeaders.AUTHORIZATION);
+        boolean sentToken = auth != null && auth.startsWith("Bearer ");
+        write(response, 401, "UNAUTHORIZED",
+                sentToken ? "Your session has ended. Please log in again." : "Please log in first");
     }
 
     @Override

@@ -124,7 +124,7 @@ class StripePaymentGatewayTest {
     void stripeUnreachable() {
         PaymentProviderException error = assertThrows(PaymentProviderException.class,
                 () -> gateway(FakeStripe.SECRET_KEY, "pk_test_fake", "http://127.0.0.1:1").createPayment(order("k-down", "20.000")));
-        assertTrue(error.getMessage().contains("Couldn't reach Stripe"), error.getMessage());
+        assertTrue(error.getMessage().contains("can't be reached"), error.getMessage());
     }
 
     @Test

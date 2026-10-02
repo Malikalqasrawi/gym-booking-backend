@@ -41,7 +41,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();
         for (FieldError error : ex.getBindingResult().getFieldErrors()) {
-            fieldErrors.putIfAbsent(error.getField(), error.getDefaultMessage());
+            // A blank field breaks several rules at once; "is required" is the one worth showing.
+            boolean missing = "NotBlank".equals(error.getCode()) || "NotNull".equals(error.getCode());
+            if (missing) {
+                fieldErrors.put(error.getField(), error.getDefaultMessage());
+            } else {
+                fieldErrors.putIfAbsent(error.getField(), error.getDefaultMessage());
+            }
         }
         String firstMessage = fieldErrors.values().stream().findFirst().orElse("Invalid request");
         return ResponseEntity.badRequest()

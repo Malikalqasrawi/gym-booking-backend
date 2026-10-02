@@ -34,6 +34,7 @@ public class TrainerServiceImpl implements TrainerService {
         }
         // Branches have few trainers, so filtering in memory is fine.
         return trainerRepository.findByBranchIdOrderByFullNameAsc(branchId).stream()
+                .filter(Trainer::isBookable)
                 .filter(filter::matches)
                 .map(this::toResponse)
                 .toList();
@@ -43,7 +44,9 @@ public class TrainerServiceImpl implements TrainerService {
     @Transactional(readOnly = true)
     public TrainerResponse findById(Long trainerId) {
         Trainer trainer = trainerRepository.findById(trainerId)
-                .orElseThrow(() -> new NotFoundException("TRAINER_NOT_FOUND", "No trainer with id " + trainerId));
+                .filter(Trainer::isBookable)
+                .orElseThrow(() -> new NotFoundException("TRAINER_NOT_FOUND",
+                        "This trainer is no longer available. Please pick another one."));
         return toResponse(trainer);
     }
 

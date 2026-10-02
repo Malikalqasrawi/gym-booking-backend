@@ -149,6 +149,28 @@ class BookingTest {
     }
 
     @Test
+    @DisplayName("the gym can cancel a paid session even in the last 24 h, with a note for the member")
+    void gymCancelsInsideMemberWindow() {
+        Booking booking = paidBooking();
+        LocalDateTime threeHoursBefore = SESSION_START.minusHours(3);
+        booking.cancelByGym("  Trainer is ill  ", threeHoursBefore);
+        assertEquals(BookingStatus.CANCELLED, booking.statusAt(threeHoursBefore));
+        assertEquals(CancelledBy.GYM, booking.getCancelledBy());
+        assertEquals("Trainer is ill", booking.getCancellationNote());
+        assertEquals("SESSION_STARTED", codeOf(() -> paidBooking().cancelByGym(null, SESSION_START)));
+        assertEquals("BOOKING_NOT_CANCELLABLE", codeOf(() -> booking.cancelByGym(null, threeHoursBefore)));
+    }
+
+    @Test
+    @DisplayName("a member's cancellation is recorded as such")
+    void memberCancellationIsRecorded() {
+        Booking booking = newRequest();
+        booking.cancelByMember(NOW);
+        assertEquals(CancelledBy.MEMBER, booking.getCancelledBy());
+        assertNull(booking.getCancellationNote());
+    }
+
+    @Test
     @DisplayName("nothing can be cancelled once the session has started")
     void cannotCancelStartedSession() {
         // Answer deadline after the start, so the request is still pending when the session begins

@@ -51,10 +51,15 @@ public class PaymentEmailListener {
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onRefunded(BookingRefundedEvent refunded) {
-        String reason = refunded.paidTooLate()
-                ? "Your session with " + refunded.trainerName() + " on " + refunded.when()
-                        + " had already expired or been cancelled when your payment arrived, so we gave the money back."
-                : "You cancelled your session with " + refunded.trainerName() + " on " + refunded.when() + ".";
+        String session = refunded.trainerName() + " on " + refunded.when();
+        String reason = switch (refunded.reason()) {
+            case MEMBER_CANCELLED -> "You cancelled your session with " + session + ".";
+            case GYM_CANCELLED -> "We're sorry, but the gym had to cancel your session with " + session + "."
+                    + (refunded.note() == null ? "" : "\nReason: " + refunded.note())
+                    + "\nYou get a full refund.";
+            case PAID_TOO_LATE -> "Your session with " + session
+                    + " had already expired or been cancelled when your payment arrived, so we gave the money back.";
+        };
         safeSend(refunded.memberEmail(), "Refund: " + money(refunded.amount(), refunded.currency()),
                 "Hi " + firstName(refunded.memberName()) + ",\n\n"
                         + reason + "\n\n"

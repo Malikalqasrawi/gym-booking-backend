@@ -85,50 +85,27 @@ public class DataSeeder implements CommandLineRunner {
     }
 
     /**
-     * Creates the trainer if missing, then fills in an empty branch, rate, profile or schedule.
-     * This also backfills trainers seeded by earlier versions.
+     * Creates the trainer with branch, rate, profile and schedule if no account uses the email.
+     * Existing trainers are left alone, so changes made by admins survive restarts.
      *
      * @return true if a new trainer account was created
      */
     private boolean seedTrainer(TrainerSeed seed, int number) {
-        boolean created = false;
-
-        Trainer trainer = userRepository.findByEmailIgnoreCase(seed.email())
-                .filter(user -> user instanceof Trainer)
-                .map(user -> (Trainer) user)
-                .orElse(null);
-
-        if (trainer == null) {
-            if (userRepository.existsByEmailIgnoreCase(seed.email())) {
-                log.warn("{} exists but is not a trainer, skipping", seed.email());
-                return false;
-            }
-            String phone = String.format("+96279%07d", number);
-            trainer = new Trainer(seed.name(), seed.email(), phone, passwordEncoder.encode(TRAINER_PASSWORD),
-                    seed.specialty(), seed.bio(), seed.years());
-            trainer.markVerified();
-            trainer = userRepository.save(trainer);
-            created = true;
+        if (userRepository.existsByEmailIgnoreCase(seed.email())) {
+            return false;
         }
+        String phone = String.format("+96279%07d", number);
+        Trainer trainer = new Trainer(seed.name(), seed.email(), phone, passwordEncoder.encode(TRAINER_PASSWORD),
+                seed.specialty(), seed.bio(), seed.years());
+        trainer.markVerified();
+        branchRepository.findByNameIgnoreCase(seed.branchName()).ifPresent(trainer::assignToBranch);
+        trainer.changeHourlyRate(new BigDecimal(seed.hourlyRate()));
+        trainer.updateProfile(seed.category(), seed.gender(), seed.languages(), seed.tags(), seed.certifications());
+        Trainer saved = userRepository.save(trainer);
 
-        if (trainer.getBranch() == null) {
-            branchRepository.findByNameIgnoreCase(seed.branchName()).ifPresent(trainer::assignToBranch);
-        }
-
-        if (!trainer.hasHourlyRate()) {
-            trainer.changeHourlyRate(new BigDecimal(seed.hourlyRate()));
-        }
-
-        if (!trainer.hasProfile()) {
-            trainer.updateProfile(seed.category(), seed.gender(), seed.languages(), seed.tags(), seed.certifications());
-        }
-
-        if (workingHoursRepository.findByTrainerId(trainer.getId()).isEmpty()) {
-            final Trainer owner = trainer;
-            workingHoursRepository.saveAll(seed.schedule().stream()
-                    .map(block -> new WorkingHours(owner, block.day(), block.start(), block.end()))
-                    .toList());
-        }
-        return created;
+        workingHoursRepository.saveAll(seed.schedule().stream()
+                .map(block -> new WorkingHours(saved, block.day(), block.start(), block.end()))
+                .toList());
+        return true;
     }
 }

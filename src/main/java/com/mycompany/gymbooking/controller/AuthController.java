@@ -1,5 +1,6 @@
 package com.mycompany.gymbooking.controller;
 
+import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
 import com.mycompany.gymbooking.dto.LoginRequest;
 import com.mycompany.gymbooking.dto.MessageResponse;
@@ -44,5 +45,10 @@ public class AuthController {
     @PostMapping("/login")
     public AuthResponse login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request);
+    }
+
+    @PostMapping("/accept-invite")
+    public AuthResponse acceptInvite(@Valid @RequestBody AcceptInviteRequest request) {
+        return authService.acceptInvite(request);
     }
 }

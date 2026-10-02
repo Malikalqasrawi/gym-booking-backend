@@ -1,5 +1,6 @@
 package com.mycompany.gymbooking.service;
 
+import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
 import com.mycompany.gymbooking.dto.LoginRequest;
 import com.mycompany.gymbooking.dto.MessageResponse;
@@ -14,10 +15,12 @@ import com.mycompany.gymbooking.exception.ForbiddenException;
 import com.mycompany.gymbooking.exception.TooManyRequestsException;
 import com.mycompany.gymbooking.exception.UnauthorizedException;
 import com.mycompany.gymbooking.model.Member;
+import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.model.User;
 import com.mycompany.gymbooking.notification.NotificationSender;
 import com.mycompany.gymbooking.repository.UserRepository;
 import com.mycompany.gymbooking.security.TokenService;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Locale;
@@ -26,7 +29,10 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Sign-up, email verification and login, with limits on code attempts, code resends and failed logins. */
+/**
+ * Sign-up, email verification, trainer invites and login, with limits on code attempts, code resends
+ * and failed logins. Invited trainers use the same one-time code fields as email verification.
+ */
 @Service
 public class AuthServiceImpl implements AuthService {
 
@@ -35,6 +41,7 @@ public class AuthServiceImpl implements AuthService {
     private final NotificationSender notificationSender;
     private final TokenService tokenService;
     private final VerificationCodeGenerator codeGenerator;
+    private final Clock clock;
     private final long codeValidityMinutes;
     private final int maxCodeAttempts;
     private final long resendCooldownSeconds;
@@ -46,6 +53,7 @@ public class AuthServiceImpl implements AuthService {
                            NotificationSender notificationSender,
                            TokenService tokenService,
                            VerificationCodeGenerator codeGenerator,
+                           Clock clock,
                            @Value("${app.verification.code-expiration-minutes}") long codeValidityMinutes,
                            @Value("${app.verification.max-attempts}") int maxCodeAttempts,
                            @Value("${app.verification.resend-cooldown-seconds}") long resendCooldownSeconds,
@@ -56,6 +64,7 @@ public class AuthServiceImpl implements AuthService {
         this.notificationSender = notificationSender;
         this.tokenService = tokenService;
         this.codeGenerator = codeGenerator;
+        this.clock = clock;
         this.codeValidityMinutes = codeValidityMinutes;
         this.maxCodeAttempts = maxCodeAttempts;
         this.resendCooldownSeconds = resendCooldownSeconds;
@@ -86,6 +95,8 @@ public class AuthServiceImpl implements AuthService {
     @Transactional(noRollbackFor = BadRequestException.class)
     public AuthResponse verifyEmail(VerifyEmailRequest request) {
         User user = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
+                // An invited trainer must set a password, so their code only works through acceptInvite.
+                .filter(found -> !(found instanceof Trainer) || found.isVerified())
                 .orElseThrow(() -> new BadRequestException("INVALID_CODE", "The code is not correct"));
 
         if (user.isVerified()) {
@@ -95,7 +106,7 @@ public class AuthServiceImpl implements AuthService {
         if (user.hasNoCodeAttemptsLeft(maxCodeAttempts)) {
             throw new BadRequestException("TOO_MANY_ATTEMPTS", "Too many wrong codes. Request a new code.");
         }
-        if (user.isVerificationCodeExpired(LocalDateTime.now())) {
+        if (user.isVerificationCodeExpired(LocalDateTime.now(clock))) {
             throw new BadRequestException("CODE_EXPIRED", "The code has expired. Request a new one.");
         }
         if (!user.verificationCodeMatches(request.code())) {
@@ -119,11 +130,11 @@ public class AuthServiceImpl implements AuthService {
 
         // Same response whether or not the email exists, so this can't be used to probe for accounts.
         userRepository.findByEmailIgnoreCase(email)
-                .filter(user -> !user.isVerified())
+                .filter(user -> user instanceof Member && !user.isVerified())
                 .ifPresent(user -> {
                     // Per-account cooldown against inbox flooding. The error does reveal an unverified
                     // account, but sign-up already reveals that via EMAIL_TAKEN.
-                    long wait = user.secondsUntilNewCodeAllowed(LocalDateTime.now(), resendCooldownSeconds);
+                    long wait = user.secondsUntilNewCodeAllowed(LocalDateTime.now(clock), resendCooldownSeconds);
                     if (wait > 0) {
                         throw new TooManyRequestsException("RESEND_TOO_SOON",
                                 "Please wait " + TooManyRequestsException.waitText(wait) + " before asking for a new code.",
@@ -142,7 +153,7 @@ public class AuthServiceImpl implements AuthService {
     public AuthResponse login(LoginRequest request) {
         User user = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
                 .orElseThrow(this::invalidCredentials);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
 
         // Checked before the password so the correct password is refused too while locked.
         if (user.isLoginLocked(now)) {
@@ -159,13 +170,46 @@ public class AuthServiceImpl implements AuthService {
         if (!user.isVerified()) {
             throw new ForbiddenException("EMAIL_NOT_VERIFIED", "Please verify your email first");
         }
+        if (!user.isActive()) {
+            throw new ForbiddenException("ACCOUNT_DEACTIVATED", "This account has been deactivated. Please contact the gym.");
+        }
 
         return buildAuthResponse(user);
     }
 
+    @Override
+    // Keep the wrong-code counter even though INVALID_CODE is thrown afterwards.
+    @Transactional(noRollbackFor = BadRequestException.class)
+    public AuthResponse acceptInvite(AcceptInviteRequest request) {
+        Trainer trainer = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
+                .filter(user -> user instanceof Trainer && !user.isVerified() && user.isActive())
+                .map(Trainer.class::cast)
+                .orElseThrow(() -> new BadRequestException("INVALID_CODE", "The email or code is not correct."));
+
+        if (trainer.hasNoCodeAttemptsLeft(maxCodeAttempts)) {
+            throw new BadRequestException("TOO_MANY_ATTEMPTS", "Too many wrong codes. Ask the gym to send a new invite.");
+        }
+        if (trainer.isVerificationCodeExpired(LocalDateTime.now(clock))) {
+            throw new BadRequestException("CODE_EXPIRED", "This invite has expired. Ask the gym to send a new one.");
+        }
+        if (!trainer.verificationCodeMatches(request.code())) {
+            int triesLeft = trainer.recordWrongCode(maxCodeAttempts);
+            userRepository.save(trainer);
+            throw new BadRequestException("INVALID_CODE", triesLeft > 0
+                    ? "The email or code is not correct. " + triesLeft + (triesLeft == 1 ? " try" : " tries") + " left."
+                    : "The email or code is not correct. No tries left. Ask the gym to send a new invite.");
+        }
+
+        trainer.changePasswordHash(passwordEncoder.encode(request.password()));
+        trainer.markVerified();
+        userRepository.save(trainer);
+
+        return buildAuthResponse(trainer);
+    }
+
     private void sendNewVerificationCode(User user) {
         String code = codeGenerator.generate();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
         user.issueVerificationCode(code, now, now.plusMinutes(codeValidityMinutes));
 
         notificationSender.send(

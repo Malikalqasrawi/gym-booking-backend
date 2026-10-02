@@ -3,6 +3,7 @@ package com.mycompany.gymbooking.dto;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.mycompany.gymbooking.model.Booking;
 import com.mycompany.gymbooking.model.BookingStatus;
+import com.mycompany.gymbooking.model.CancelledBy;
 import com.mycompany.gymbooking.model.Payment;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -37,7 +38,9 @@ public record BookingResponse(
         boolean canPay,
         @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm") LocalDateTime cancelUntil,  // null if not cancellable
         boolean canCancel,
-        PaymentInfo payment                                                     // null until paid
+        PaymentInfo payment,                                                    // null until paid
+        CancelledBy cancelledBy,                                                // null unless cancelled
+        String cancellationNote
 ) {
 
     /** Without payment details, for trainer views. */
@@ -71,7 +74,9 @@ public record BookingResponse(
                 booking.canBePaidAt(now),
                 booking.cancelDeadline(now),
                 booking.canBeCancelledAt(now),
-                PaymentInfo.from(payment)
+                PaymentInfo.from(payment),
+                booking.getCancelledBy(),
+                booking.getCancellationNote()
         );
     }
 }
