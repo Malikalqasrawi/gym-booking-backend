@@ -4,6 +4,7 @@ import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
 import com.mycompany.gymbooking.dto.ChangePasswordRequest;
 import com.mycompany.gymbooking.dto.ForgotPasswordRequest;
+import com.mycompany.gymbooking.dto.GoogleLoginRequest;
 import com.mycompany.gymbooking.dto.LoginRequest;
 import com.mycompany.gymbooking.dto.LoginResponse;
 import com.mycompany.gymbooking.dto.MessageResponse;
@@ -24,6 +25,7 @@ import com.mycompany.gymbooking.exception.ApiException;
 import com.mycompany.gymbooking.exception.BadRequestException;
 import com.mycompany.gymbooking.exception.ConflictException;
 import com.mycompany.gymbooking.exception.ForbiddenException;
+import com.mycompany.gymbooking.exception.ServiceUnavailableException;
 import com.mycompany.gymbooking.exception.TooManyRequestsException;
 import com.mycompany.gymbooking.exception.UnauthorizedException;
 import com.mycompany.gymbooking.model.Member;
@@ -31,11 +33,15 @@ import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.model.User;
 import com.mycompany.gymbooking.notification.NotificationSender;
 import com.mycompany.gymbooking.repository.UserRepository;
+import com.mycompany.gymbooking.security.GoogleIdTokenVerifier;
+import com.mycompany.gymbooking.security.GoogleIdTokenVerifier.GoogleAccount;
 import com.mycompany.gymbooking.security.TokenService;
 import com.mycompany.gymbooking.service.TwoFactorService.CodeCheck;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import org.springframework.beans.factory.annotation.Value;
@@ -44,8 +50,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Sign-up, email verification, trainer invites, login (with or without two-factor authentication)
- * and password resets, with limits on code attempts, code resends and failed logins. Invites and
+ * Sign-up, email verification, trainer invites, login (with a password or Google, and with or
+ * without two-factor authentication) and password resets, with limits on code attempts, code resends and failed logins. Invites and
  * password resets use the same one-time code fields as email verification: an invite before the
  * account is verified, a reset only after.
  */
@@ -58,6 +64,7 @@ public class AuthServiceImpl implements AuthService {
     private final SessionService sessionService;
     private final TwoFactorService twoFactorService;
     private final TokenService tokenService;
+    private final GoogleIdTokenVerifier googleVerifier;
     private final VerificationCodeGenerator codeGenerator;
     private final Clock clock;
     private final long codeValidityMinutes;
@@ -65,6 +72,7 @@ public class AuthServiceImpl implements AuthService {
     private final long resendCooldownSeconds;
     private final int maxLoginAttempts;
     private final long loginLockMinutes;
+    private final SecureRandom random = new SecureRandom();
 
     public AuthServiceImpl(UserRepository userRepository,
                            PasswordEncoder passwordEncoder,
@@ -72,6 +80,7 @@ public class AuthServiceImpl implements AuthService {
                            SessionService sessionService,
                            TwoFactorService twoFactorService,
                            TokenService tokenService,
+                           GoogleIdTokenVerifier googleVerifier,
                            VerificationCodeGenerator codeGenerator,
                            Clock clock,
                            @Value("${app.verification.code-expiration-minutes}") long codeValidityMinutes,
@@ -85,6 +94,7 @@ public class AuthServiceImpl implements AuthService {
         this.sessionService = sessionService;
         this.twoFactorService = twoFactorService;
         this.tokenService = tokenService;
+        this.googleVerifier = googleVerifier;
         this.codeGenerator = codeGenerator;
         this.clock = clock;
         this.codeValidityMinutes = codeValidityMinutes;
@@ -202,11 +212,30 @@ public class AuthServiceImpl implements AuthService {
             throw new ForbiddenException("ACCOUNT_DEACTIVATED", "This account has been deactivated. Please contact the gym.");
         }
 
-        if (codeStepFollows) {
-            TwoFactorStep next = user.isTwoFactorEnabled() ? TwoFactorStep.CODE_REQUIRED : TwoFactorStep.SETUP_REQUIRED;
-            return LoginResponse.nextStep(next, tokenService.generateLoginChallenge(user));
+        return finishLogin(user);
+    }
+
+    @Override
+    @Transactional
+    public LoginResponse loginWithGoogle(GoogleLoginRequest request) {
+        if (!googleVerifier.isEnabled()) {
+            throw new ServiceUnavailableException("GOOGLE_SIGN_IN_OFF", "Google sign-in isn't set up on this server.");
         }
-        return LoginResponse.loggedIn(buildAuthResponse(user));
+        GoogleAccount google = googleVerifier.verify(request.idToken())
+                .orElseThrow(() -> new UnauthorizedException("INVALID_GOOGLE_TOKEN", "Google sign-in failed. Please try again."));
+
+        User user = userRepository.findByGoogleSubject(google.subject())
+                .orElseGet(() -> linkOrCreateMember(google));
+        if (!user.isActive()) {
+            throw new ForbiddenException("ACCOUNT_DEACTIVATED", "This account has been deactivated. Please contact the gym.");
+        }
+        // Google has proved who this is, so earlier wrong passwords no longer count, unless a code
+        // from the authenticator app is still needed.
+        if (!user.isTwoFactorEnabled()) {
+            user.recordSuccessfulLogin();
+        }
+        userRepository.save(user);
+        return finishLogin(user);
     }
 
     @Override
@@ -433,6 +462,59 @@ public class AuthServiceImpl implements AuthService {
 
     private AuthResponse buildAuthResponse(User user) {
         return sessionService.open(user);
+    }
+
+    /** After the first step (password or Google): a session, or the two-factor step. */
+    private LoginResponse finishLogin(User user) {
+        if (user.isTwoFactorEnabled()) {
+            return LoginResponse.nextStep(TwoFactorStep.CODE_REQUIRED, tokenService.generateLoginChallenge(user));
+        }
+        if (user.needsTwoFactorSetup()) {
+            return LoginResponse.nextStep(TwoFactorStep.SETUP_REQUIRED, tokenService.generateLoginChallenge(user));
+        }
+        return LoginResponse.loggedIn(buildAuthResponse(user));
+    }
+
+    /** A first Google sign-in: links the member account with the same email, or creates one. */
+    private User linkOrCreateMember(GoogleAccount google) {
+        String email = normalizeEmail(google.email());
+        User existing = userRepository.findByEmailIgnoreCase(email).orElse(null);
+        if (existing == null) {
+            if (!google.emailVerified()) {
+                throw new UnauthorizedException("GOOGLE_EMAIL_NOT_VERIFIED",
+                        "Your Google account's email isn't verified. Verify it with Google, or sign up with a password.");
+            }
+            String name = google.name() == null || google.name().isBlank() ? email.substring(0, email.indexOf('@')) : google.name().trim();
+            Member member = Member.signedUpWithGoogle(name.length() > 100 ? name.substring(0, 100) : name,
+                    email, google.subject(), unusablePasswordHash());
+            return userRepository.save(member);
+        }
+
+        if (!(existing instanceof Member)) {
+            throw new ForbiddenException("GOOGLE_MEMBERS_ONLY",
+                    "Google sign-in is for members. Trainers and admins log in with their password.");
+        }
+        // Linking gives this Google account access to the existing account, so Google must be the
+        // one that controls the email address, not just someone who typed it in.
+        if (!google.googleOwnsEmail()) {
+            throw new ConflictException("ACCOUNT_EXISTS",
+                    "An account with this email already exists. Log in with your password.");
+        }
+        if (!existing.isVerified()) {
+            // Whoever signed up with this email never proved they own it; Google just did. Their
+            // password is removed so they can't get in.
+            existing.removePassword(unusablePasswordHash());
+            existing.markVerified();
+        }
+        existing.linkGoogle(google.subject());
+        return existing;
+    }
+
+    /** The hash of a random password nobody knows, for accounts without a password. */
+    private String unusablePasswordHash() {
+        byte[] bytes = new byte[32];
+        random.nextBytes(bytes);
+        return passwordEncoder.encode(Base64.getEncoder().encodeToString(bytes));
     }
 
     /** Wrong passwords count like failed logins, so a logged-in phone can't be used to guess the password. */

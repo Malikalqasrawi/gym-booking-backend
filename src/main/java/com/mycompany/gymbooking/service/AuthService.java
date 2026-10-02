@@ -4,6 +4,7 @@ import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
 import com.mycompany.gymbooking.dto.ChangePasswordRequest;
 import com.mycompany.gymbooking.dto.ForgotPasswordRequest;
+import com.mycompany.gymbooking.dto.GoogleLoginRequest;
 import com.mycompany.gymbooking.dto.LoginRequest;
 import com.mycompany.gymbooking.dto.LoginResponse;
 import com.mycompany.gymbooking.dto.MessageResponse;
@@ -37,6 +38,12 @@ public interface AuthService {
      * challenge token instead of a session.
      */
     LoginResponse login(LoginRequest request);
+
+    /**
+     * Logs a member in with a Google ID token. The first time, it links the member account with
+     * the same email or creates one. Two-factor authentication still applies.
+     */
+    LoginResponse loginWithGoogle(GoogleLoginRequest request);
 
     /** Second login step: a code from the authenticator app, or a recovery code. */
     AuthResponse loginWithCode(TwoFactorLoginRequest request);

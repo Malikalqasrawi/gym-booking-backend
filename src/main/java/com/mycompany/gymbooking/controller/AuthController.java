@@ -3,6 +3,7 @@ package com.mycompany.gymbooking.controller;
 import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
 import com.mycompany.gymbooking.dto.ForgotPasswordRequest;
+import com.mycompany.gymbooking.dto.GoogleLoginRequest;
 import com.mycompany.gymbooking.dto.LoginRequest;
 import com.mycompany.gymbooking.dto.LoginResponse;
 import com.mycompany.gymbooking.dto.MessageResponse;
@@ -53,6 +54,12 @@ public class AuthController {
     @PostMapping("/login")
     public LoginResponse login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request);
+    }
+
+    /** Members only. A first sign-in links the account with the same email, or creates one. */
+    @PostMapping("/google")
+    public LoginResponse loginWithGoogle(@Valid @RequestBody GoogleLoginRequest request) {
+        return authService.loginWithGoogle(request);
     }
 
     @PostMapping("/login/2fa")
