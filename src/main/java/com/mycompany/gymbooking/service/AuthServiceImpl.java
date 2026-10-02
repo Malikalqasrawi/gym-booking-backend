@@ -33,6 +33,7 @@ import com.mycompany.gymbooking.model.Trainer;
 import com.mycompany.gymbooking.model.User;
 import com.mycompany.gymbooking.notification.NotificationSender;
 import com.mycompany.gymbooking.notification.SecurityAlerts;
+import com.mycompany.gymbooking.phone.PhoneNumbers;
 import com.mycompany.gymbooking.repository.UserRepository;
 import com.mycompany.gymbooking.security.GoogleIdTokenVerifier;
 import com.mycompany.gymbooking.security.GoogleIdTokenVerifier.GoogleAccount;
@@ -118,7 +119,7 @@ public class AuthServiceImpl implements AuthService {
         }
 
         String passwordHash = passwordEncoder.encode(request.password());
-        Member member = new Member(request.fullName().trim(), email, request.phone().trim(), passwordHash);
+        Member member = new Member(request.fullName().trim(), email, PhoneNumbers.toInternational(request.phone()), passwordHash);
 
         sendNewVerificationCode(member);
         userRepository.save(member);

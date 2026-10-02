@@ -27,6 +27,7 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 | Area | Details |
 |---|---|
 | Accounts | Sign-up with email verification code or with Google (members), password reset by emailed code, change password, member / trainer / admin roles, lockout after 5 failed logins |
+| Phone numbers | Checked against each country's rules (Google's libphonenumber) and stored in international format; members confirm theirs with a code by SMS (Twilio Verify) before their first booking |
 | Sessions | 15-minute JWT access tokens renewed with rotating refresh tokens (30 days), logout per device or on all devices |
 | Two-factor login | Codes from an authenticator app (TOTP, RFC 6238), required for admins and optional for members and trainers, 8 one-time recovery codes, moving to a new phone |
 | Branches & trainers | 5 branches with coordinates and opening hours, 22 trainer profiles, filters (category, gender, max rate), weekly schedules |
@@ -96,6 +97,7 @@ sequenceDiagram
 - **Late payments are refunded.** If a payment succeeds after the booking has expired or been cancelled, it is refunded right away and the client gets `PAID_TOO_LATE`.
 - **Emails go through an outbox.** `NotificationSender` doesn't send anything itself: it saves the email in `outgoing_emails` in the same transaction as the change it reports. A rolled-back change never sends an email, and a committed one always does, even after a restart. Once the transaction commits, `EmailDispatcher` sends the email on a background thread, so a slow or unreachable mail server never slows down or fails a request. A failed attempt is retried after 1, 5, 15 and 60 minutes, then the email is marked `FAILED`. A version column makes sure two senders can't send the same email. The text is deleted once it's sent, and the rows after 30 days. Payment emails come from domain events (`BookingPaidEvent`, `BookingRefundedEvent`) handled just before the payment commits.
 - **One text, two formats.** Each email is written once, as plain text. `EmailLayout` builds the branded HTML version from it (details as a table, steps as a list, codes in large print), so both versions always match. Anything a user typed, like a booking note, is HTML-escaped.
+- **Phone numbers by country, confirmed by SMS.** `PhoneNumbers` checks numbers with Google's libphonenumber, which knows every country's numbering plan, and stores them in international format (E.164, e.g. `+962791234567`). Numbers typed without a country code are read as Jordanian, and numbers saved before this are converted at startup (`PhoneNumberUpgrade`). Members confirm their number with a 6-digit code by SMS before their first booking, and again after changing it, so the trainer and the gym can reach them. `PhoneCodes` hides the provider: Twilio Verify creates, texts and checks the codes, and without Twilio keys the code is written to the log. The limits are the app's own, the same for both: a new code once a minute per number, 5 a day per account (each SMS costs money), 5 tries per code, 10 minutes to enter it.
 - **Security alerts and reminders.** Changing or resetting the password, turning two-factor authentication on or off, moving it to a new phone and adding Google sign-in to an existing account each send an email that says what to do if it wasn't you. `SessionReminders` emails the member and the trainer 24 hours before a paid session. It locks each booking and records the reminder in `reminder_checked_at`, so nobody gets two. Sessions paid within those 24 hours get none, because the confirmation was just sent.
 - **Plain REST instead of the Stripe SDK.** The API only needs three Stripe endpoints, so it calls them with Spring's `RestClient`. The integration tests then run against a local fake Stripe server instead of mocks.
 - **Time is injected.** Services use a `Clock` in the gym's timezone (`Asia/Amman`), so deadlines are deterministic in tests (`MutableClock`).
@@ -176,6 +178,9 @@ Settings are in `src/main/resources/application.properties`. Secrets go in `loca
 | `app.notifications.mode` | `EMAIL_MODE` | `console` (default) writes emails to the log; `email` sends them |
 | `spring.mail.username` | `MAIL_USERNAME` | The Gmail address that sends the emails |
 | `spring.mail.password` | `MAIL_PASSWORD` | A Gmail app password, not the Google account password |
+| `app.sms.twilio.account-sid` | `TWILIO_ACCOUNT_SID` | Optional. With the two below, SMS codes are texted by Twilio Verify; without them they are written to the log |
+| `app.sms.twilio.auth-token` | `TWILIO_AUTH_TOKEN` | |
+| `app.sms.twilio.verify-service-sid` | `TWILIO_VERIFY_SERVICE_SID` | The Verify service (`VA...`) |
 
 Without Stripe keys the service still starts, and the payment endpoints return `503 PAYMENTS_NOT_CONFIGURED`. Without a Google client ID, `/api/auth/google` returns `503 GOOGLE_SIGN_IN_OFF`.
 
@@ -205,6 +210,23 @@ By default, emails are written to the log. To send them from a Gmail account:
 4. Restart. Emails come from that address with the name "Gym Booking" (`app.mail.from-name`).
 
 Gmail limits how many emails a personal account can send per day, which is fine for development; a real deployment would use an email service, set with `spring.mail.host` and `spring.mail.port`. If Gmail rejects the login, the log says so and the emails wait in the outbox until it works.
+
+### Real SMS with Twilio (optional)
+
+By default, the SMS codes for phone numbers are written to the log. To text them:
+
+1. Sign up for a free trial at [twilio.com](https://www.twilio.com/try-twilio). On a trial account, Twilio only texts numbers you have verified in its console, such as your own.
+2. On the Twilio Console home page, copy the **Account SID** and the **Auth Token**.
+3. Under **Verify > Services**, create a service named "Gym Booking" and copy its **Service SID** (it starts with `VA`).
+4. Add to `local.properties` and restart:
+
+   ```properties
+   app.sms.twilio.account-sid=AC...
+   app.sms.twilio.auth-token=your-auth-token
+   app.sms.twilio.verify-service-sid=VA...
+   ```
+
+Twilio charges for each verification; see the [Verify page](https://www.twilio.com/en-us/user-authentication-identity/verify) for prices.
 
 ### Stripe test mode
 
@@ -245,8 +267,10 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | POST | `/api/auth/reset-password` | `email, code, password` | `200`; then log in with the new password. Also lifts a login lock |
 | POST | `/api/auth/refresh` | `refreshToken` | `200 {token, refreshToken, user}`; the old refresh token stops working |
 | POST | `/api/auth/logout` | `refreshToken` | `204`; ends this device's session |
-| GET | `/api/users/me` | | `200` current user, including `twoFactorEnabled` and `hasPassword` (false after signing up with Google, until one is set with Forgot password) |
-| PUT | `/api/users/me/phone` | `phone` | `200` user, e.g. after signing up with Google |
+| GET | `/api/users/me` | | `200` current user, including `phoneVerified`, `twoFactorEnabled` and `hasPassword` (false after signing up with Google, until one is set with Forgot password) |
+| PUT | `/api/users/me/phone` | `phone` | `200` user, e.g. after signing up with Google. A different number has to be confirmed again |
+| POST | `/api/users/me/phone/code` | | `200 {phone, resendAfterSeconds, expiresInMinutes}`; texts a 6-digit code to the user's number |
+| POST | `/api/users/me/phone/confirm` | `code` | `200` user with `phoneVerified: true` |
 | POST | `/api/users/me/password` | `currentPassword, newPassword` | `200 {token, refreshToken, user}`; other devices are logged out |
 | POST | `/api/users/me/logout-all` | | `204`; ends every session on every device |
 | POST | `/api/users/me/2fa/setup` | `password, code?` | `200 {secret, otpauthUri}`. `code` (from the current app, or a recovery code) only when two-factor is already on, to move to a new phone |
@@ -293,7 +317,7 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 
 | Method | Path | Role | Notes |
 |---|---|---|---|
-| POST | `/api/bookings` | member | `{trainerId, date, startTime, durationMinutes, note?}` |
+| POST | `/api/bookings` | member | `{trainerId, date, startTime, durationMinutes, note?}`. `403 PHONE_NOT_VERIFIED` until the member has confirmed their phone number |
 | GET | `/api/bookings/mine` | member | |
 | GET | `/api/bookings/{id}` | member | |
 | POST | `/api/bookings/{id}/cancel` | member | Refunds automatically if paid |
@@ -335,8 +359,9 @@ Errors share one format:
 | `/api/auth/**` per IP | 10 / min | `429 RATE_LIMITED` |
 | Other endpoints per IP | 100 / min | `429 RATE_LIMITED` |
 | Verification code resend | 1 / 60 s | `429 RESEND_TOO_SOON` |
+| SMS codes | 1 / 60 s per number, 5 a day per account | `429 RESEND_TOO_SOON`, `429 TOO_MANY_CODES` |
 | Wrong passwords or two-factor codes | 5 in a row, then 15 min lock | `429 ACCOUNT_LOCKED` |
-| Wrong verification codes | 5 per code | `400 TOO_MANY_ATTEMPTS` |
+| Wrong verification or SMS codes | 5 per code | `400 TOO_MANY_ATTEMPTS` |
 
 `429` responses include `Retry-After`. All limits are configurable in `application.properties`.
 
@@ -351,6 +376,7 @@ src/main/java/com/mycompany/gymbooking
 ├── model/          JPA entities and enums
 ├── notification/   email outbox and sending, HTML layout, payment emails, security alerts
 ├── payment/        PaymentGateway, Stripe client, webhook verification
+├── phone/          phone number rules, SMS codes (Twilio Verify or the log)
 ├── repository/     Spring Data repositories
 ├── security/       JWT, Google ID tokens, two-factor codes (TOTP), rate limiting, security error handling
 └── service/        business logic, the expiry job and session reminders
@@ -362,7 +388,7 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-107 tests. They need no MySQL, network, Stripe, Google or mail account.
+120 tests. They need no MySQL, network, Stripe, Google, mail or Twilio account.
 
 | Test | Covers |
 |---|---|
@@ -376,11 +402,14 @@ mvn verify
 | `InMemoryRateLimiterTest` | Token bucket refill and `Retry-After` |
 | `GoogleIdTokenVerifierTest` | Google ID tokens: signature, audience, issuer, expiry, key rotation, Google being unreachable |
 | `TotpTest` | Authenticator codes against the RFC 6238 test values, Base32, clock drift, the QR code link |
+| `PhoneNumbersTest` | Jordanian numbers typed in different ways, numbers that can't exist, landlines, other countries |
+| `TwilioPhoneCodesTest` | Requests sent to a local fake of Twilio Verify, its answers, refused numbers, Twilio being down |
 | `EmailLayoutTest` | The HTML version of an email: details, steps, codes, paragraphs, escaping |
 | `EmailDeliveryTest` | Real SMTP against a local fake mail server: text and HTML parts, sender name, rolled-back transactions, retries, giving up, a rejected login, cleanup |
 | `SessionApiTest` | End-to-end: refresh token rotation and reuse, logout, logout on all devices, change password |
 | `GoogleSignInApiTest` | End-to-end: Google sign-up and phone number, linking members, members only, unverified sign-ups, invalid tokens, two-factor after Google |
 | `SecurityAlertsApiTest` | End-to-end: alerts for password changes and resets, two-factor on, moved and off, Google sign-in added |
+| `PhoneVerificationApiTest` | End-to-end: numbers by country, the SMS code before the first booking, changing the number, wrong and expired codes, daily limit, converting old numbers |
 | `SessionRemindersApiTest` | End-to-end: one reminder to the member and the trainer a day before, none for sessions paid within that day |
 | `TwoFactorApiTest` | End-to-end: admin setup at first login, codes and recovery codes, used codes, lockout, expired challenges, moving to a new phone, turning it off |
 | `GymBookingApiTest` | End-to-end over HTTP: auth, password reset, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages |
@@ -401,6 +430,7 @@ CI runs the test suite and a Docker Compose smoke test on every push and pull re
 - [x] Two-factor authentication with an authenticator app
 - [x] Google sign-in for members
 - [x] Real emails: Gmail, HTML layout, retries, security alerts, session reminders
+- [x] Phone numbers by country, confirmed by SMS
 
 ## License
 

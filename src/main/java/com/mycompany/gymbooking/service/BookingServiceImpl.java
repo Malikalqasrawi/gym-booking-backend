@@ -111,6 +111,11 @@ public class BookingServiceImpl implements BookingService {
         }
 
         Member member = findMember(memberId);
+        if (!member.isPhoneVerified()) {
+            // So the trainer and the gym can reach the member at a number that really is theirs.
+            throw new ForbiddenException("PHONE_NOT_VERIFIED",
+                    "Please confirm your phone number first. We'll text you a code.");
+        }
         LocalTime end = request.startTime().plusMinutes(request.durationMinutes());
 
         boolean busy = bookingRepository.findByMemberIdAndDateAndStatusIn(memberId, request.date(), Booking.SLOT_HOLDING)
