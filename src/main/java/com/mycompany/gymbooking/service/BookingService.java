@@ -2,6 +2,7 @@ package com.mycompany.gymbooking.service;
 
 import com.mycompany.gymbooking.dto.BookingRequest;
 import com.mycompany.gymbooking.dto.BookingResponse;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -31,6 +32,15 @@ public interface BookingService {
      * emails the members. Joins the caller's transaction.
      */
     GymCancellations cancelUpcomingForTrainer(Long trainerId, String note);
+
+    /**
+     * Cancels the given bookings that still hold a slot and haven't started, refunding paid ones in
+     * full, and emails the members and trainers. Others are skipped. Joins the caller's transaction.
+     */
+    GymCancellations cancelByGym(Collection<Long> bookingIds, String note);
+
+    /** Cancels one booking on the gym's side, with the same refund and emails. */
+    void cancelByGym(Long bookingId, String note);
 
     /** Marks unanswered requests and unpaid accepted bookings as EXPIRED. Returns the number expired. */
     int expireOverdue();

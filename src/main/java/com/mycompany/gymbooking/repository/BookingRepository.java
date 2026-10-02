@@ -9,6 +9,7 @@ import java.time.LocalTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
@@ -57,6 +58,74 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     List<Long> findIdsByTrainerFrom(@Param("trainerId") Long trainerId,
                                     @Param("statuses") Collection<BookingStatus> statuses,
                                     @Param("fromDate") LocalDate fromDate);
+
+    /** Bookings in a date range for a trainer or at a branch that may still hold a slot; the caller filters by time. */
+    @Query("""
+            select b from Booking b
+            where b.status in :statuses and b.date between :fromDate and :toDate
+              and (b.trainer.id = :trainerId or b.branch.id = :branchId)
+            order by b.date, b.startTime
+            """)
+    List<Booking> findForBlock(@Param("trainerId") Long trainerId,
+                               @Param("branchId") Long branchId,
+                               @Param("statuses") Collection<BookingStatus> statuses,
+                               @Param("fromDate") LocalDate fromDate,
+                               @Param("toDate") LocalDate toDate);
+
+    interface BookingSlot {
+        Long getId();
+
+        LocalDate getDate();
+
+        LocalTime getStartTime();
+
+        LocalTime getEndTime();
+    }
+
+    /**
+     * Same bookings as {@link #findForBlock}, as id and time only, so none are loaded before the
+     * caller locks them.
+     */
+    @Query("""
+            select b.id as id, b.date as date, b.startTime as startTime, b.endTime as endTime from Booking b
+            where b.status in :statuses and b.date between :fromDate and :toDate
+              and (b.trainer.id = :trainerId or b.branch.id = :branchId)
+            order by b.date, b.startTime
+            """)
+    List<BookingSlot> findSlotsForBlock(@Param("trainerId") Long trainerId,
+                                        @Param("branchId") Long branchId,
+                                        @Param("statuses") Collection<BookingStatus> statuses,
+                                        @Param("fromDate") LocalDate fromDate,
+                                        @Param("toDate") LocalDate toDate);
+
+    /** Admin list: sessions that haven't ended, soonest first. Null filters match everything. */
+    @EntityGraph(attributePaths = {"trainer", "member", "branch"})
+    @Query("""
+            select b from Booking b
+            where (b.date > :today or (b.date = :today and b.endTime > :time))
+              and (:branchId is null or b.branch.id = :branchId)
+              and (:trainerId is null or b.trainer.id = :trainerId)
+            order by b.date, b.startTime
+            """)
+    List<Booking> findUpcomingForAdmin(@Param("today") LocalDate today,
+                                       @Param("time") LocalTime time,
+                                       @Param("branchId") Long branchId,
+                                       @Param("trainerId") Long trainerId);
+
+    /** Admin list: sessions that have ended, most recent first. */
+    @EntityGraph(attributePaths = {"trainer", "member", "branch"})
+    @Query("""
+            select b from Booking b
+            where (b.date < :today or (b.date = :today and b.endTime <= :time))
+              and (:branchId is null or b.branch.id = :branchId)
+              and (:trainerId is null or b.trainer.id = :trainerId)
+            order by b.date desc, b.startTime desc
+            """)
+    List<Booking> findPastForAdmin(@Param("today") LocalDate today,
+                                   @Param("time") LocalTime time,
+                                   @Param("branchId") Long branchId,
+                                   @Param("trainerId") Long trainerId,
+                                   Pageable limit);
 
     interface TrainerBookingCount {
         Long getTrainerId();

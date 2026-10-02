@@ -21,6 +21,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Collection;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
@@ -198,20 +199,43 @@ public class BookingServiceImpl implements BookingService {
     @Transactional
     public GymCancellations cancelUpcomingForTrainer(Long trainerId, String note) {
         LocalDateTime now = LocalDateTime.now(clock);
+        List<Long> ids = bookingRepository.findIdsByTrainerFrom(trainerId, Booking.SLOT_HOLDING, now.toLocalDate());
+        // The trainer is leaving, so only the members are told.
+        GymCancellations result = cancelAllByGym(ids, note, now, false);
+        if (result.cancelled() > 0) {
+            log.info("Cancelled {} booking(s) of trainer {} ({} refunded)", result.cancelled(), trainerId, result.refunded());
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional
+    public GymCancellations cancelByGym(Collection<Long> bookingIds, String note) {
+        return cancelAllByGym(bookingIds, note, LocalDateTime.now(clock), true);
+    }
+
+    @Override
+    @Transactional
+    public void cancelByGym(Long bookingId, String note) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        Booking booking = bookingRepository.findLockedById(bookingId)
+                .orElseThrow(() -> new NotFoundException("BOOKING_NOT_FOUND", "Booking not found"));
+        cancelLockedByGym(booking, note, now, true);
+    }
+
+    /** Locks and cancels each booking that still holds a slot and hasn't started; skips the rest. */
+    private GymCancellations cancelAllByGym(Collection<Long> bookingIds, String note, LocalDateTime now, boolean tellTrainer) {
         int cancelled = 0;
         int refunded = 0;
-        for (Long id : bookingRepository.findIdsByTrainerFrom(trainerId, Booking.SLOT_HOLDING, now.toLocalDate())) {
-            Booking booking = bookingRepository.findLockedById(id).orElseThrow();
-            if (!booking.holdsSlotAt(now) || !booking.getStartsAt().isAfter(now)) {
+        for (Long id : bookingIds) {
+            Booking booking = bookingRepository.findLockedById(id).orElse(null);
+            if (booking == null || !booking.holdsSlotAt(now) || !booking.getStartsAt().isAfter(now)) {
                 continue;   // started already, or overdue and about to expire
             }
-            if (cancelByGym(booking, note, now)) {
+            if (cancelLockedByGym(booking, note, now, tellTrainer)) {
                 refunded++;
             }
             cancelled++;
-        }
-        if (cancelled > 0) {
-            log.info("Cancelled {} booking(s) of trainer {} ({} refunded)", cancelled, trainerId, refunded);
         }
         return new GymCancellations(cancelled, refunded);
     }
@@ -220,7 +244,7 @@ public class BookingServiceImpl implements BookingService {
      * Cancels a locked booking on the gym's side and tells the member. A paid booking is refunded in
      * full, and the refund email doubles as the cancellation notice. Returns true if it was refunded.
      */
-    private boolean cancelByGym(Booking booking, String note, LocalDateTime now) {
+    private boolean cancelLockedByGym(Booking booking, String note, LocalDateTime now, boolean tellTrainer) {
         boolean wasPaid = booking.statusAt(now) == BookingStatus.PAID;
         booking.cancelByGym(note, now);
         if (wasPaid) {
@@ -231,6 +255,13 @@ public class BookingServiceImpl implements BookingService {
                             + " on " + BookingTexts.when(booking) + "."
                             + (booking.getCancellationNote() == null ? "" : "\nReason: " + booking.getCancellationNote())
                             + "\nNothing was charged. You can book another time in the app.");
+        }
+        if (tellTrainer) {
+            notificationSender.send(booking.getTrainer().getEmail(), "Session cancelled by the gym",
+                    "The gym cancelled your session with " + booking.getMember().getFullName()
+                            + " on " + BookingTexts.when(booking) + "."
+                            + (booking.getCancellationNote() == null ? "" : "\nReason: " + booking.getCancellationNote())
+                            + (wasPaid ? "\nThe member was refunded in full." : ""));
         }
         return wasPaid;
     }

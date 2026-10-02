@@ -2,9 +2,11 @@ package com.mycompany.gymbooking.controller;
 
 import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
+import com.mycompany.gymbooking.dto.ForgotPasswordRequest;
 import com.mycompany.gymbooking.dto.LoginRequest;
 import com.mycompany.gymbooking.dto.MessageResponse;
 import com.mycompany.gymbooking.dto.ResendCodeRequest;
+import com.mycompany.gymbooking.dto.ResetPasswordRequest;
 import com.mycompany.gymbooking.dto.SignUpRequest;
 import com.mycompany.gymbooking.dto.VerifyEmailRequest;
 import com.mycompany.gymbooking.service.AuthService;
@@ -50,5 +52,15 @@ public class AuthController {
     @PostMapping("/accept-invite")
     public AuthResponse acceptInvite(@Valid @RequestBody AcceptInviteRequest request) {
         return authService.acceptInvite(request);
+    }
+
+    @PostMapping("/forgot-password")
+    public MessageResponse forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
+        return authService.forgotPassword(request);
+    }
+
+    @PostMapping("/reset-password")
+    public MessageResponse resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
+        return authService.resetPassword(request);
     }
 }

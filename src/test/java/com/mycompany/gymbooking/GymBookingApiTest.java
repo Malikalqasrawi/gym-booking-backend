@@ -14,12 +14,14 @@ import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/** End-to-end tests of sign-up, bookings, payments and access rules. */
+/** End-to-end tests of sign-up, password resets, bookings, payments and access rules. */
 class GymBookingApiTest extends ApiTestBase {
 
     @Test
@@ -50,6 +52,48 @@ class GymBookingApiTest extends ApiTestBase {
 
         Reply wrongPassword = call("POST", "/api/auth/login", null, Map.of("email", email, "password", "Wrong1234"));
         assertEquals(401, wrongPassword.status());
+    }
+
+    @Test
+    @DisplayName("forgot password: code by email, wrong codes count down, new password works, old one doesn't, lock lifted")
+    void forgotPassword() throws Exception {
+        String email = memberEmail(newMember());
+        for (int i = 0; i < 5; i++) {
+            call("POST", "/api/auth/login", null, Map.of("email", email, "password", "Wrong1234"));
+        }
+        assertEquals("ACCOUNT_LOCKED", call("POST", "/api/auth/login", null,
+                Map.of("email", email, "password", "Secret1234")).code());
+
+        Reply unknown = call("POST", "/api/auth/forgot-password", null, Map.of("email", "nobody@test.com"));
+        Reply sent = call("POST", "/api/auth/forgot-password", null, Map.of("email", email));
+        assertEquals(200, sent.status(), sent.body().toString());
+        assertEquals(unknown.body().path("message"), sent.body().path("message"), "same answer, so accounts can't be found");
+        Matcher match = Pattern.compile("is: (\\d{6})").matcher(mailbox.latestBody(email, "Reset your Gym Booking password"));
+        assertTrue(match.find());
+        String code = match.group(1);
+
+        call("POST", "/api/auth/forgot-password", null, Map.of("email", email));
+        assertEquals(1, mailbox.count(email, "Reset"), "no second code within the cooldown");
+
+        Reply wrong = call("POST", "/api/auth/reset-password", null, Map.of("email", email, "code", "000000", "password", "NewPass123"));
+        assertEquals("INVALID_CODE", wrong.code());
+        assertTrue(wrong.body().path("message").asText().endsWith("4 tries left."), wrong.body().toString());
+        assertEquals("VALIDATION_FAILED", call("POST", "/api/auth/reset-password", null,
+                Map.of("email", email, "code", code, "password", "short")).code());
+
+        Reply reset = call("POST", "/api/auth/reset-password", null, Map.of("email", email, "code", code, "password", "NewPass123"));
+        assertEquals(200, reset.status(), reset.body().toString());
+        assertEquals("INVALID_CREDENTIALS", call("POST", "/api/auth/login", null,
+                Map.of("email", email, "password", "Secret1234")).code());
+        assertEquals(200, call("POST", "/api/auth/login", null, Map.of("email", email, "password", "NewPass123")).status());
+        assertEquals("INVALID_CODE", call("POST", "/api/auth/reset-password", null,
+                Map.of("email", email, "code", code, "password", "Other1234")).code(), "a code works once");
+
+        String unverified = "unverified" + MEMBER_NUMBER.incrementAndGet() + "@test.com";
+        call("POST", "/api/auth/signup", null, Map.of(
+                "fullName", "New Member", "email", unverified, "phone", "0790000000", "password", "Secret1234"));
+        call("POST", "/api/auth/forgot-password", null, Map.of("email", unverified));
+        assertEquals(0, mailbox.count(unverified, "Reset"), "unverified accounts verify their email instead");
     }
 
     @Test

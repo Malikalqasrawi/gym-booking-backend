@@ -6,6 +6,7 @@ import com.mycompany.gymbooking.exception.BadRequestException;
 import com.mycompany.gymbooking.exception.ConflictException;
 import com.mycompany.gymbooking.exception.NotFoundException;
 import com.mycompany.gymbooking.model.Branch;
+import com.mycompany.gymbooking.repository.BlockedTimeRepository;
 import com.mycompany.gymbooking.repository.BookingRepository;
 import com.mycompany.gymbooking.repository.BranchRepository;
 import com.mycompany.gymbooking.repository.TrainerRepository;
@@ -20,13 +21,16 @@ public class BranchServiceImpl implements BranchService {
     private final BranchRepository branchRepository;
     private final TrainerRepository trainerRepository;
     private final BookingRepository bookingRepository;
+    private final BlockedTimeRepository blockedTimeRepository;
 
     public BranchServiceImpl(BranchRepository branchRepository,
                              TrainerRepository trainerRepository,
-                             BookingRepository bookingRepository) {
+                             BookingRepository bookingRepository,
+                             BlockedTimeRepository blockedTimeRepository) {
         this.branchRepository = branchRepository;
         this.trainerRepository = trainerRepository;
         this.bookingRepository = bookingRepository;
+        this.blockedTimeRepository = blockedTimeRepository;
     }
 
     @Override
@@ -104,6 +108,7 @@ public class BranchServiceImpl implements BranchService {
             throw new ConflictException("BRANCH_IN_USE",
                     "This branch has trainers or bookings, so it can't be deleted.");
         }
+        blockedTimeRepository.deleteByBranchId(id);
         branchRepository.delete(branch);
     }
 
