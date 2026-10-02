@@ -12,8 +12,8 @@ import org.springframework.security.web.authentication.WebAuthenticationDetailsS
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Authenticates requests that carry a valid Bearer token for a verified, active user. A missing or
- * invalid token is ignored, so protected endpoints answer 401.
+ * Authenticates requests that carry a valid, current Bearer token for a verified, active user. A
+ * missing, invalid or outdated token is ignored, so protected endpoints answer 401.
  *
  * Not a @Component: SecurityConfig adds it to the security chain, and a bean would also be
  * registered as a regular servlet filter.
@@ -40,9 +40,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (header != null && header.startsWith(BEARER_PREFIX)) {
             String token = header.substring(BEARER_PREFIX.length());
 
-            tokenService.readEmail(token)
-                    .flatMap(userRepository::findByEmailIgnoreCase)
+            tokenService.read(token)
+                    .flatMap(claims -> userRepository.findByEmailIgnoreCase(claims.email())
+                            // An older version means the user's sessions were ended after this token was issued.
+                            .filter(user -> user.getTokenVersion() == claims.version()))
                     .filter(user -> user.isVerified() && user.isActive())
+                    // An admin session from before two-factor login was required.
+                    .filter(user -> !user.needsTwoFactorSetup())
                     .ifPresent(user -> {
                         SecurityUser principal = new SecurityUser(user);
                         var authentication = new UsernamePasswordAuthenticationToken(

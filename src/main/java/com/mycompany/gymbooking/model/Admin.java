@@ -23,4 +23,10 @@ public class Admin extends User {
     public String getDisplayTitle() {
         return "Administrator";
     }
+
+    /** An admin can change the whole gym, so a password alone is not enough. */
+    @Override
+    public boolean requiresTwoFactor() {
+        return true;
+    }
 }

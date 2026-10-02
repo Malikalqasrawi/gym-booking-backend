@@ -25,7 +25,9 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 
 | Area | Details |
 |---|---|
-| Accounts | Sign-up with email verification code, password reset by emailed code, JWT auth, member / trainer / admin roles, lockout after 5 failed logins |
+| Accounts | Sign-up with email verification code, password reset by emailed code, change password, member / trainer / admin roles, lockout after 5 failed logins |
+| Sessions | 15-minute JWT access tokens renewed with rotating refresh tokens (30 days), logout per device or on all devices |
+| Two-factor login | Codes from an authenticator app (TOTP, RFC 6238), required for admins and optional for members and trainers, 8 one-time recovery codes, moving to a new phone |
 | Branches & trainers | 5 branches with coordinates and opening hours, 22 trainer profiles, filters (category, gender, max rate), weekly schedules |
 | Availability | Free start times per trainer, date and duration (30/45/60/90 min), based on working hours, branch hours and existing bookings |
 | Bookings | Request, accept or decline, 24 h reply deadline, max 3 pending requests per member, cancellation rules |
@@ -96,6 +98,8 @@ sequenceDiagram
 - **Blocked times are applied in two places.** Availability never offers a blocked slot, and creating a block cancels the bookings already inside it. The admin first gets a preview of how many bookings that would be. Deleting a block frees the time again but doesn't restore cancelled bookings.
 - **Expiry is enforced on read.** `Booking.statusAt(now)` already reports overdue bookings as expired, and the scheduled job persists that every minute, one transaction per booking.
 - **Money.** Prices are `BigDecimal` in JOD, which has three decimal places (1 JOD = 1000 fils). Stripe can't charge JOD, so cards are charged the USD equivalent at the dinar's fixed peg (`ChargeConversion`), and receipts show both amounts. Charge currency and rate are configuration, so a JOD-capable provider needs no code change.
+- **Short access tokens, rotating refresh tokens.** Access tokens last 15 minutes. Refresh tokens are random, stored only as SHA-256 hashes, and replaced on every use. If a replaced token shows up again later, someone may have copied it, so all of that user's sessions end. Every token carries the user's token version: changing or resetting the password, "log out of all devices" and deactivation raise it, which ends all existing sessions at once without a token blocklist.
+- **Two-factor login in two steps.** A correct password for a two-factor account returns a challenge token instead of a session: a 10-minute JWT that only the code step accepts. The codes are computed in `Totp` (HMAC-SHA1 over 30-second steps, no library) and each code works once. Wrong codes count toward the same lock as wrong passwords, and entering the password again doesn't reset the count, so codes can't be guessed. Recovery codes are stored as SHA-256 hashes. An admin can't get a session without it, and admin sessions from before it was required are ended. The app's secret is stored as it is, because the server needs it to check codes; a production setup would encrypt it with a key from a secrets manager.
 - **Secrets stay out of the repo.** Configuration comes from a git-ignored `local.properties` or `.env`. A pre-commit hook blocks key-like strings, and the app refuses to start with live Stripe keys.
 
 ## Tech stack
@@ -131,6 +135,7 @@ Requires JDK 21+ and MySQL 8.4.
 cp local.properties.example local.properties
 bash scripts/create-db-user.sh    # creates the MySQL user "gymapp" and stores its password in local.properties
 # add a JWT secret to local.properties: openssl rand -base64 64 | tr -d '\n'
+# optional: set app.admin.initial-password in local.properties (otherwise a random one is printed once)
 mvn spring-boot:run
 ```
 
@@ -138,11 +143,10 @@ The `gymdb` schema and its tables are created on first start. The `gymapp` user 
 
 ### Demo data
 
-On startup the app seeds any missing branches, trainers and the admin account. These credentials are for local development only.
+On startup the app seeds any missing branches, trainers and the admin account (`admin@gym.com`). The admin password comes from `app.admin.initial-password` in `local.properties` (`ADMIN_PASSWORD` in `.env`). If it isn't set, a random password is generated and printed once in the log. Change it in the app under Profile > Change password. At the admin's first login, the app asks them to set up an authenticator app such as Google Authenticator or the iPhone's Passwords app. If the phone and the recovery codes are both lost, setting `two_factor_secret` to `NULL` for `admin@gym.com` in MySQL starts the setup again at the next login. The trainer accounts are demo data for local development only.
 
 | Role | Email | Password |
 |---|---|---|
-| Admin | `admin@gym.com` | `Admin1234` |
 | Trainer | `<firstname>.trainer@gym.com`, e.g. `sara.trainer@gym.com` | `Trainer1234` |
 
 Trainers by branch: Abdoun (sara, yousef, rania, khaled, maya), Khalda (omar, dana, ahmad, hala), Sweifieh (lina, faris, noor, hamza, jana), Shmeisani (laith, ruba, qais, aya), Jubeiha (mohammad, leen, bashar, tala). Members sign up through the app.
@@ -155,6 +159,7 @@ Settings are in `src/main/resources/application.properties`. Secrets go in `loca
 |---|---|---|
 | `spring.datasource.password` | `DB_PASSWORD` | Set by `create-db-user.sh` |
 | `app.jwt.secret` | `JWT_SECRET` | Required. Base64, 64+ bytes |
+| `app.admin.initial-password` | `ADMIN_PASSWORD` | First admin's password; random and logged once if empty |
 | `app.payments.stripe.secret-key` | `STRIPE_SECRET_KEY` | `sk_test_...` only |
 | `app.payments.stripe.publishable-key` | `STRIPE_PUBLISHABLE_KEY` | `pk_test_...`, passed to the app |
 | `app.payments.stripe.webhook-secret` | `STRIPE_WEBHOOK_SECRET` | Optional |
@@ -190,13 +195,23 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 | Method | Path | Body | Response |
 |---|---|---|---|
 | POST | `/api/auth/signup` | `fullName, email, phone, password` | `201`, verification code sent by email |
-| POST | `/api/auth/verify` | `email, code` | `200 {token, user}` |
+| POST | `/api/auth/verify` | `email, code` | `200 {token, refreshToken, user}` |
 | POST | `/api/auth/resend-code` | `email` | `200` |
-| POST | `/api/auth/login` | `email, password` | `200 {token, user}` |
-| POST | `/api/auth/accept-invite` | `email, code, password` | `200 {token, user}`; for trainers added by an admin |
+| POST | `/api/auth/login` | `email, password` | `200 {token, refreshToken, user}`, or for two-factor accounts `200 {twoFactor, challengeToken}` with `twoFactor` = `CODE_REQUIRED` or `SETUP_REQUIRED` (an admin without an authenticator app yet) |
+| POST | `/api/auth/login/2fa` | `challengeToken, code` | `200 {token, refreshToken, user}`. `code` is the 6-digit code from the app or a recovery code |
+| POST | `/api/auth/login/2fa/setup` | `challengeToken` | `200 {secret, otpauthUri}` for an admin's first login; show `otpauthUri` as a QR code |
+| POST | `/api/auth/login/2fa/confirm` | `challengeToken, code` | `200 {recoveryCodes, token, refreshToken, user}`; the admin's older sessions end |
+| POST | `/api/auth/accept-invite` | `email, code, password` | `200 {token, refreshToken, user}`; for trainers added by an admin |
 | POST | `/api/auth/forgot-password` | `email` | `200`. Emails a reset code (valid 10 minutes) to a verified account; the same answer whether or not the email exists |
 | POST | `/api/auth/reset-password` | `email, code, password` | `200`; then log in with the new password. Also lifts a login lock |
-| GET | `/api/users/me` | | `200` current user |
+| POST | `/api/auth/refresh` | `refreshToken` | `200 {token, refreshToken, user}`; the old refresh token stops working |
+| POST | `/api/auth/logout` | `refreshToken` | `204`; ends this device's session |
+| GET | `/api/users/me` | | `200` current user, including `twoFactorEnabled` |
+| POST | `/api/users/me/password` | `currentPassword, newPassword` | `200 {token, refreshToken, user}`; other devices are logged out |
+| POST | `/api/users/me/logout-all` | | `204`; ends every session on every device |
+| POST | `/api/users/me/2fa/setup` | `password, code?` | `200 {secret, otpauthUri}`. `code` (from the current app, or a recovery code) only when two-factor is already on, to move to a new phone |
+| POST | `/api/users/me/2fa/confirm` | `code` | `200 {recoveryCodes}`; turns two-factor on with a code from the new app and replaces old recovery codes |
+| POST | `/api/users/me/2fa/disable` | `password, code` | `204`; not allowed for admins (`403 TWO_FACTOR_REQUIRED`) |
 
 ### Branches and trainers
 
@@ -280,7 +295,7 @@ Errors share one format:
 | `/api/auth/**` per IP | 10 / min | `429 RATE_LIMITED` |
 | Other endpoints per IP | 100 / min | `429 RATE_LIMITED` |
 | Verification code resend | 1 / 60 s | `429 RESEND_TOO_SOON` |
-| Failed logins | 5, then 15 min lock | `429 ACCOUNT_LOCKED` |
+| Wrong passwords or two-factor codes | 5 in a row, then 15 min lock | `429 ACCOUNT_LOCKED` |
 | Wrong verification codes | 5 per code | `400 TOO_MANY_ATTEMPTS` |
 
 `429` responses include `Retry-After`. All limits are configurable in `application.properties`.
@@ -297,7 +312,7 @@ src/main/java/com/mycompany/gymbooking
 ├── notification/   email senders and payment email listener
 ├── payment/        PaymentGateway, Stripe client, webhook verification
 ├── repository/     Spring Data repositories
-├── security/       JWT, rate limiting, security error handling
+├── security/       JWT, two-factor codes (TOTP), rate limiting, security error handling
 └── service/        business logic and the expiry job
 ```
 
@@ -307,7 +322,7 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-68 tests. They need no MySQL, network or Stripe account.
+83 tests. They need no MySQL, network or Stripe account.
 
 | Test | Covers |
 |---|---|
@@ -319,6 +334,9 @@ mvn verify
 | `StripeWebhookVerifierTest` | Signature and timestamp checks |
 | `StripePaymentGatewayTest` | Requests sent to Stripe, idempotency, error handling |
 | `InMemoryRateLimiterTest` | Token bucket refill and `Retry-After` |
+| `TotpTest` | Authenticator codes against the RFC 6238 test values, Base32, clock drift, the QR code link |
+| `SessionApiTest` | End-to-end: refresh token rotation and reuse, logout, logout on all devices, change password |
+| `TwoFactorApiTest` | End-to-end: admin setup at first login, codes and recovery codes, used codes, lockout, expired challenges, moving to a new phone, turning it off |
 | `GymBookingApiTest` | End-to-end over HTTP: auth, password reset, roles, access control, double booking, payment and refund flow, declines, webhooks, late payments, Stripe outages |
 | `AdminTrainerApiTest` | End-to-end: admin-only access, invite flow, validation, editing, schedules, deactivation with refunds, branches in use |
 | `AdminBookingApiTest` | End-to-end: admin bookings list and filters, gym cancellations with refunds, trainer and branch blocks, validation |
@@ -333,7 +351,8 @@ CI runs the test suite and a Docker Compose smoke test on every push and pull re
 - [x] Stripe payments, refunds, confirmation emails
 - [x] Admin: trainer invites, profiles, weekly schedules, deactivation
 - [x] Admin: all bookings, gym cancellations, blocked times, branch management
-- [ ] Refresh tokens and 2FA for admins
+- [x] Refresh tokens, logout on all devices, change password
+- [x] Two-factor authentication with an authenticator app
 - [ ] Google sign-in
 
 ## License

@@ -25,7 +25,7 @@ class AdminBookingApiTest extends ApiTestBase {
 
     @BeforeAll
     static void setUp() throws Exception {
-        adminToken = login("admin@gym.com", "Admin1234");
+        adminToken = adminLogin();
         thursday = wednesday.plusDays(1);
         LocalDate day = LocalDate.now(AMMAN).plusDays(1);
         while (day.getDayOfWeek() != DayOfWeek.MONDAY) {

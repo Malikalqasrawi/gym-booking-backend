@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mycompany.gymbooking.notification.NotificationSender;
+import com.mycompany.gymbooking.security.Totp;
 import com.mycompany.gymbooking.support.CapturingNotificationSender;
 import com.mycompany.gymbooking.support.FakeStripe;
 import java.net.URI;
@@ -14,6 +15,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.SecureRandom;
 import java.time.DayOfWeek;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.Base64;
@@ -35,11 +37,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 abstract class ApiTestBase {
 
     protected static final String WEBHOOK_SECRET = "whsec_test_only";
+    protected static final String ADMIN_EMAIL = "admin@gym.com";
+    /** The first admin's password, set through configuration like in local.properties. */
+    protected static final String ADMIN_PASSWORD = "AdminTest123";
     protected static final ZoneId AMMAN = ZoneId.of("Asia/Amman");
     protected static final ObjectMapper JSON = new ObjectMapper();
     protected static final HttpClient HTTP = HttpClient.newHttpClient();
     protected static final AtomicInteger MEMBER_NUMBER = new AtomicInteger();
 
+    /** The admin's authenticator-app secret, set up by the first adminLogin() of each test class. */
+    protected static String adminSecret;
     protected static FakeStripe stripe;
     protected static CapturingNotificationSender mailbox;
     protected static ConfigurableApplicationContext backend;
@@ -83,6 +90,7 @@ abstract class ApiTestBase {
                         "--app.payments.stripe.publishable-key=pk_test_fake",
                         "--app.payments.stripe.api-base=" + stripe.baseUrl(),
                         "--app.payments.stripe.webhook-secret=" + WEBHOOK_SECRET,
+                        "--app.admin.initial-password=" + ADMIN_PASSWORD,
                         "--spring.main.banner-mode=off");
         baseUrl = "http://localhost:" + backend.getEnvironment().getProperty("local.server.port");
 
@@ -130,6 +138,42 @@ abstract class ApiTestBase {
         Reply reply = call("POST", "/api/auth/login", null, Map.of("email", email, "password", password));
         assertEquals(200, reply.status(), "login " + email + ": " + reply.body());
         return reply.body().path("token").asText();
+    }
+
+    /**
+     * Logs in as the admin with a code from the authenticator app, like the app does. The first
+     * login of each class (each has a new database) sets the app up.
+     */
+    protected static String adminLogin() throws Exception {
+        Reply login = call("POST", "/api/auth/login", null, Map.of("email", ADMIN_EMAIL, "password", ADMIN_PASSWORD));
+        assertEquals(200, login.status(), login.body().toString());
+        String challenge = login.body().path("challengeToken").asText();
+        if (login.body().path("twoFactor").asText().equals("SETUP_REQUIRED")) {
+            adminSecret = call("POST", "/api/auth/login/2fa/setup", null, Map.of("challengeToken", challenge))
+                    .body().path("secret").asText();
+            Reply confirmed = call("POST", "/api/auth/login/2fa/confirm", null,
+                    Map.of("challengeToken", challenge, "code", currentCode(adminSecret)));
+            assertEquals(200, confirmed.status(), confirmed.body().toString());
+            return confirmed.body().path("token").asText();
+        }
+        forgetUsedCodes(ADMIN_EMAIL);
+        Reply verified = call("POST", "/api/auth/login/2fa", null,
+                Map.of("challengeToken", challenge, "code", currentCode(adminSecret)));
+        assertEquals(200, verified.status(), verified.body().toString());
+        return verified.body().path("token").asText();
+    }
+
+    /** The code an authenticator app with this secret shows right now. */
+    protected static String currentCode(String secret) {
+        return Totp.codeAt(secret, Totp.stepAt(Instant.now()));
+    }
+
+    /**
+     * Each code works only once, and a new one comes every 30 seconds. Tests log in faster than
+     * that, so they forget the last used code instead of waiting.
+     */
+    protected static void forgetUsedCodes(String email) {
+        jdbc().update("update users set two_factor_last_step = null where email = ?", email);
     }
 
     /** Signs up and verifies a brand-new member; returns their login token. */

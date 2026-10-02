@@ -179,6 +179,7 @@ public class AdminTrainerServiceImpl implements AdminTrainerService {
             throw new ConflictException("TRAINER_ALREADY_DEACTIVATED", "This trainer is already deactivated.");
         }
         trainer.deactivate(LocalDateTime.now(clock));
+        trainer.endAllSessions();   // their app is logged out at its next request
 
         String note = reason == null || reason.isBlank() ? DEFAULT_DEACTIVATION_NOTE : reason.trim();
         GymCancellations cancellations = bookingService.cancelUpcomingForTrainer(trainerId, note);

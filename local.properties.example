@@ -6,6 +6,9 @@ spring.datasource.password=PUT_YOUR_MYSQL_PASSWORD_HERE
 # Base64-encoded, at least 64 bytes: openssl rand -base64 64 | tr -d '\n'
 app.jwt.secret=PUT_A_RANDOM_BASE64_SECRET_HERE
 
+# Password for the first admin account (admin@gym.com). Leave it out to get a random one in the log.
+#app.admin.initial-password=CHOOSE_A_STRONG_PASSWORD
+
 # Stripe test-mode keys (live keys are rejected)
 #app.payments.stripe.secret-key=sk_test_...
 #app.payments.stripe.publishable-key=pk_test_...

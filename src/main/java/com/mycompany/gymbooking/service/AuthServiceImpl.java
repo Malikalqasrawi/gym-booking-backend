@@ -2,13 +2,23 @@ package com.mycompany.gymbooking.service;
 
 import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
+import com.mycompany.gymbooking.dto.ChangePasswordRequest;
 import com.mycompany.gymbooking.dto.ForgotPasswordRequest;
 import com.mycompany.gymbooking.dto.LoginRequest;
+import com.mycompany.gymbooking.dto.LoginResponse;
 import com.mycompany.gymbooking.dto.MessageResponse;
+import com.mycompany.gymbooking.dto.RecoveryCodesResponse;
+import com.mycompany.gymbooking.dto.RefreshRequest;
 import com.mycompany.gymbooking.dto.ResendCodeRequest;
 import com.mycompany.gymbooking.dto.ResetPasswordRequest;
 import com.mycompany.gymbooking.dto.SignUpRequest;
-import com.mycompany.gymbooking.dto.UserResponse;
+import com.mycompany.gymbooking.dto.TwoFactorChallengeRequest;
+import com.mycompany.gymbooking.dto.TwoFactorCodeRequest;
+import com.mycompany.gymbooking.dto.TwoFactorDisableRequest;
+import com.mycompany.gymbooking.dto.TwoFactorLoginRequest;
+import com.mycompany.gymbooking.dto.TwoFactorSetupRequest;
+import com.mycompany.gymbooking.dto.TwoFactorSetupResponse;
+import com.mycompany.gymbooking.dto.TwoFactorStep;
 import com.mycompany.gymbooking.dto.VerifyEmailRequest;
 import com.mycompany.gymbooking.exception.ApiException;
 import com.mycompany.gymbooking.exception.BadRequestException;
@@ -22,9 +32,11 @@ import com.mycompany.gymbooking.model.User;
 import com.mycompany.gymbooking.notification.NotificationSender;
 import com.mycompany.gymbooking.repository.UserRepository;
 import com.mycompany.gymbooking.security.TokenService;
+import com.mycompany.gymbooking.service.TwoFactorService.CodeCheck;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Locale;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -32,9 +44,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Sign-up, email verification, trainer invites, login and password resets, with limits on code
- * attempts, code resends and failed logins. Invites and password resets use the same one-time code
- * fields as email verification: an invite before the account is verified, a reset only after.
+ * Sign-up, email verification, trainer invites, login (with or without two-factor authentication)
+ * and password resets, with limits on code attempts, code resends and failed logins. Invites and
+ * password resets use the same one-time code fields as email verification: an invite before the
+ * account is verified, a reset only after.
  */
 @Service
 public class AuthServiceImpl implements AuthService {
@@ -42,6 +55,8 @@ public class AuthServiceImpl implements AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final NotificationSender notificationSender;
+    private final SessionService sessionService;
+    private final TwoFactorService twoFactorService;
     private final TokenService tokenService;
     private final VerificationCodeGenerator codeGenerator;
     private final Clock clock;
@@ -54,6 +69,8 @@ public class AuthServiceImpl implements AuthService {
     public AuthServiceImpl(UserRepository userRepository,
                            PasswordEncoder passwordEncoder,
                            NotificationSender notificationSender,
+                           SessionService sessionService,
+                           TwoFactorService twoFactorService,
                            TokenService tokenService,
                            VerificationCodeGenerator codeGenerator,
                            Clock clock,
@@ -65,6 +82,8 @@ public class AuthServiceImpl implements AuthService {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.notificationSender = notificationSender;
+        this.sessionService = sessionService;
+        this.twoFactorService = twoFactorService;
         this.tokenService = tokenService;
         this.codeGenerator = codeGenerator;
         this.clock = clock;
@@ -153,23 +172,29 @@ public class AuthServiceImpl implements AuthService {
     @Override
     // Keep the failed-login counter even though an error is thrown.
     @Transactional(noRollbackFor = ApiException.class)
-    public AuthResponse login(LoginRequest request) {
+    public LoginResponse login(LoginRequest request) {
         User user = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
                 .orElseThrow(this::invalidCredentials);
         LocalDateTime now = LocalDateTime.now(clock);
 
         // Checked before the password so the correct password is refused too while locked.
         if (user.isLoginLocked(now)) {
-            throw accountLocked(user, now);
+            throw accountLocked(user, now, "Too many wrong attempts.");
         }
 
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             boolean justLocked = user.recordFailedLogin(maxLoginAttempts, now.plusMinutes(loginLockMinutes));
             userRepository.save(user);
-            throw justLocked ? accountLocked(user, now) : invalidCredentials();
+            throw justLocked ? accountLocked(user, now, "Too many wrong passwords.") : invalidCredentials();
         }
 
-        user.recordSuccessfulLogin();
+        // With two-factor authentication the password is only the first step, so wrong attempts keep
+        // counting until the code is right too. Otherwise the password could be entered again after
+        // every few wrong codes to keep guessing.
+        boolean codeStepFollows = user.isTwoFactorEnabled() || user.needsTwoFactorSetup();
+        if (!codeStepFollows) {
+            user.recordSuccessfulLogin();
+        }
         if (!user.isVerified()) {
             throw new ForbiddenException("EMAIL_NOT_VERIFIED", "Please verify your email first");
         }
@@ -177,7 +202,51 @@ public class AuthServiceImpl implements AuthService {
             throw new ForbiddenException("ACCOUNT_DEACTIVATED", "This account has been deactivated. Please contact the gym.");
         }
 
+        if (codeStepFollows) {
+            TwoFactorStep next = user.isTwoFactorEnabled() ? TwoFactorStep.CODE_REQUIRED : TwoFactorStep.SETUP_REQUIRED;
+            return LoginResponse.nextStep(next, tokenService.generateLoginChallenge(user));
+        }
+        return LoginResponse.loggedIn(buildAuthResponse(user));
+    }
+
+    @Override
+    // Keep the failed-attempt counter even though an error is thrown.
+    @Transactional(noRollbackFor = ApiException.class)
+    public AuthResponse loginWithCode(TwoFactorLoginRequest request) {
+        User user = challengedUser(request.challengeToken());
+        if (!user.isTwoFactorEnabled()) {
+            throw loginExpired();   // turned off on another device since the password step
+        }
+        requireSecondFactor(user, request.code());
+        userRepository.save(user);
         return buildAuthResponse(user);
+    }
+
+    @Override
+    @Transactional
+    public TwoFactorSetupResponse startLoginSetup(TwoFactorChallengeRequest request) {
+        User user = challengedUser(request.challengeToken());
+        if (!user.needsTwoFactorSetup()) {
+            throw loginExpired();
+        }
+        TwoFactorSetupResponse setup = twoFactorService.startSetup(user);
+        userRepository.save(user);
+        return setup;
+    }
+
+    @Override
+    @Transactional
+    public RecoveryCodesResponse confirmLoginSetup(TwoFactorLoginRequest request) {
+        User user = challengedUser(request.challengeToken());
+        if (!user.needsTwoFactorSetup()) {
+            throw loginExpired();
+        }
+        List<String> recoveryCodes = twoFactorService.confirmSetup(user, request.code());
+        user.recordSuccessfulLogin();
+        // From now on every admin session has passed two-factor login, so any older ones end.
+        user.endAllSessions();
+        userRepository.save(user);
+        return new RecoveryCodesResponse(recoveryCodes, buildAuthResponse(user));
     }
 
     @Override
@@ -260,8 +329,92 @@ public class AuthServiceImpl implements AuthService {
         user.changePasswordHash(passwordEncoder.encode(request.password()));
         user.markVerified();            // clears the code so it can't be used again
         user.recordSuccessfulLogin();   // proving the email also lifts a login lock
+        user.endAllSessions();          // whoever knew the old password is logged out
         userRepository.save(user);
         return new MessageResponse("Your password was changed. Log in with your new password.");
+    }
+
+    @Override
+    public AuthResponse refresh(RefreshRequest request) {
+        return sessionService.refresh(request.refreshToken());
+    }
+
+    @Override
+    public void logout(RefreshRequest request) {
+        sessionService.close(request.refreshToken());
+    }
+
+    @Override
+    // Keep the failed-attempt counter even though WRONG_PASSWORD is thrown afterwards.
+    @Transactional(noRollbackFor = ApiException.class)
+    public AuthResponse changePassword(Long userId, ChangePasswordRequest request) {
+        User user = userRepository.findById(userId).orElseThrow();
+        requirePassword(user, request.currentPassword(), "Your current password is not correct.");
+        if (passwordEncoder.matches(request.newPassword(), user.getPasswordHash())) {
+            throw new BadRequestException("SAME_PASSWORD", "Choose a password that's different from your current one.");
+        }
+
+        user.changePasswordHash(passwordEncoder.encode(request.newPassword()));
+        user.recordSuccessfulLogin();
+        user.endAllSessions();
+        userRepository.save(user);
+        return sessionService.open(user);   // this device stays logged in with a new session
+    }
+
+    @Override
+    @Transactional
+    public void logoutEverywhere(Long userId) {
+        User user = userRepository.findById(userId).orElseThrow();
+        user.endAllSessions();
+        userRepository.save(user);
+    }
+
+    @Override
+    // Keep the failed-attempt counter even though an error is thrown.
+    @Transactional(noRollbackFor = ApiException.class)
+    public TwoFactorSetupResponse startTwoFactorSetup(Long userId, TwoFactorSetupRequest request) {
+        User user = userRepository.findById(userId).orElseThrow();
+        // The password is asked for so that someone using an unlocked phone can't lock the owner out
+        // by connecting their own authenticator app.
+        requirePassword(user, request.password(), "Your password is not correct.");
+        if (user.isTwoFactorEnabled()) {
+            // Moving to a new phone: the current app (or a recovery code) must agree too.
+            if (request.code() == null || request.code().isBlank()) {
+                throw new BadRequestException("TWO_FACTOR_CODE_REQUIRED",
+                        "Enter a code from your current authenticator app, or a recovery code.");
+            }
+            requireSecondFactor(user, request.code());
+        }
+        user.recordSuccessfulLogin();
+        TwoFactorSetupResponse setup = twoFactorService.startSetup(user);
+        userRepository.save(user);
+        return setup;
+    }
+
+    @Override
+    @Transactional
+    public RecoveryCodesResponse confirmTwoFactorSetup(Long userId, TwoFactorCodeRequest request) {
+        User user = userRepository.findById(userId).orElseThrow();
+        List<String> recoveryCodes = twoFactorService.confirmSetup(user, request.code());
+        userRepository.save(user);
+        return new RecoveryCodesResponse(recoveryCodes, null);   // other devices stay logged in
+    }
+
+    @Override
+    // Keep the failed-attempt counter even though an error is thrown.
+    @Transactional(noRollbackFor = ApiException.class)
+    public void disableTwoFactor(Long userId, TwoFactorDisableRequest request) {
+        User user = userRepository.findById(userId).orElseThrow();
+        if (user.requiresTwoFactor()) {
+            throw new ForbiddenException("TWO_FACTOR_REQUIRED", "Admins must keep two-factor authentication on.");
+        }
+        if (!user.isTwoFactorEnabled()) {
+            throw new BadRequestException("TWO_FACTOR_OFF", "Two-factor authentication is already off.");
+        }
+        requirePassword(user, request.password(), "Your password is not correct.");
+        requireSecondFactor(user, request.code());
+        user.disableTwoFactor();
+        userRepository.save(user);
     }
 
     private void sendNewVerificationCode(User user) {
@@ -279,13 +432,67 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private AuthResponse buildAuthResponse(User user) {
-        return new AuthResponse(tokenService.generateToken(user), UserResponse.from(user));
+        return sessionService.open(user);
     }
 
-    private TooManyRequestsException accountLocked(User user, LocalDateTime now) {
+    /** Wrong passwords count like failed logins, so a logged-in phone can't be used to guess the password. */
+    private void requirePassword(User user, String password, String wrongPasswordMessage) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        if (user.isLoginLocked(now)) {
+            throw accountLocked(user, now, "Too many wrong attempts.");
+        }
+        if (!passwordEncoder.matches(password, user.getPasswordHash())) {
+            boolean justLocked = user.recordFailedLogin(maxLoginAttempts, now.plusMinutes(loginLockMinutes));
+            userRepository.save(user);
+            throw justLocked ? accountLocked(user, now, "Too many wrong passwords.")
+                    : new BadRequestException("WRONG_PASSWORD", wrongPasswordMessage);
+        }
+    }
+
+    /**
+     * Checks a code from the authenticator app or a recovery code. Wrong codes count like wrong
+     * passwords, so the 1-in-a-million chance per guess can't be repeated often enough to matter.
+     */
+    private void requireSecondFactor(User user, String code) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        if (user.isLoginLocked(now)) {
+            throw accountLocked(user, now, "Too many wrong attempts.");
+        }
+        CodeCheck result = twoFactorService.check(user, code);
+        if (result == CodeCheck.ACCEPTED) {
+            user.recordSuccessfulLogin();
+            return;
+        }
+        boolean justLocked = user.recordFailedLogin(maxLoginAttempts, now.plusMinutes(loginLockMinutes));
+        userRepository.save(user);
+        if (justLocked) {
+            throw accountLocked(user, now, "Too many wrong codes.");
+        }
+        throw result == CodeCheck.ALREADY_USED
+                ? new BadRequestException("CODE_ALREADY_USED",
+                        "This code was already used. Wait for the next code in your authenticator app.")
+                : new BadRequestException("INVALID_TWO_FACTOR_CODE",
+                        "The code is not correct. Enter the current code from your authenticator app, or a recovery code.");
+    }
+
+    /** The user who passed the password step, if their challenge token is still valid. */
+    private User challengedUser(String challengeToken) {
+        return tokenService.readLoginChallenge(challengeToken)
+                .flatMap(challenge -> userRepository.findByEmailIgnoreCase(challenge.email())
+                        // A newer version means the password was changed or the sessions were ended since.
+                        .filter(user -> user.getTokenVersion() == challenge.version()))
+                .filter(user -> user.isVerified() && user.isActive())
+                .orElseThrow(this::loginExpired);
+    }
+
+    private UnauthorizedException loginExpired() {
+        return new UnauthorizedException("LOGIN_EXPIRED", "Your login has expired. Please log in again.");
+    }
+
+    private TooManyRequestsException accountLocked(User user, LocalDateTime now, String reason) {
         long seconds = Math.max(1, Duration.between(now, user.getLoginLockedUntil()).toSeconds());
         return new TooManyRequestsException("ACCOUNT_LOCKED",
-                "Too many wrong passwords. Try again in " + TooManyRequestsException.waitText(seconds) + ".",
+                reason + " Try again in " + TooManyRequestsException.waitText(seconds) + ".",
                 seconds);
     }
 

@@ -10,7 +10,8 @@ public record UserResponse(
         String email,
         String phone,
         Role role,
-        String title
+        String title,
+        boolean twoFactorEnabled
 ) {
 
     public static UserResponse from(User user) {
@@ -20,7 +21,8 @@ public record UserResponse(
                 user.getEmail(),
                 user.getPhone(),
                 user.getRole(),
-                user.getDisplayTitle()
+                user.getDisplayTitle(),
+                user.isTwoFactorEnabled()
         );
     }
 }

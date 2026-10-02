@@ -4,10 +4,16 @@ import com.mycompany.gymbooking.dto.AcceptInviteRequest;
 import com.mycompany.gymbooking.dto.AuthResponse;
 import com.mycompany.gymbooking.dto.ForgotPasswordRequest;
 import com.mycompany.gymbooking.dto.LoginRequest;
+import com.mycompany.gymbooking.dto.LoginResponse;
 import com.mycompany.gymbooking.dto.MessageResponse;
+import com.mycompany.gymbooking.dto.RecoveryCodesResponse;
+import com.mycompany.gymbooking.dto.RefreshRequest;
 import com.mycompany.gymbooking.dto.ResendCodeRequest;
 import com.mycompany.gymbooking.dto.ResetPasswordRequest;
 import com.mycompany.gymbooking.dto.SignUpRequest;
+import com.mycompany.gymbooking.dto.TwoFactorChallengeRequest;
+import com.mycompany.gymbooking.dto.TwoFactorLoginRequest;
+import com.mycompany.gymbooking.dto.TwoFactorSetupResponse;
 import com.mycompany.gymbooking.dto.VerifyEmailRequest;
 import com.mycompany.gymbooking.service.AuthService;
 import jakarta.validation.Valid;
@@ -45,8 +51,24 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public AuthResponse login(@Valid @RequestBody LoginRequest request) {
+    public LoginResponse login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request);
+    }
+
+    @PostMapping("/login/2fa")
+    public AuthResponse loginWithCode(@Valid @RequestBody TwoFactorLoginRequest request) {
+        return authService.loginWithCode(request);
+    }
+
+    /** For an admin who hasn't set up an authenticator app yet. */
+    @PostMapping("/login/2fa/setup")
+    public TwoFactorSetupResponse startLoginSetup(@Valid @RequestBody TwoFactorChallengeRequest request) {
+        return authService.startLoginSetup(request);
+    }
+
+    @PostMapping("/login/2fa/confirm")
+    public RecoveryCodesResponse confirmLoginSetup(@Valid @RequestBody TwoFactorLoginRequest request) {
+        return authService.confirmLoginSetup(request);
     }
 
     @PostMapping("/accept-invite")
@@ -62,5 +84,16 @@ public class AuthController {
     @PostMapping("/reset-password")
     public MessageResponse resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
         return authService.resetPassword(request);
+    }
+
+    @PostMapping("/refresh")
+    public AuthResponse refresh(@Valid @RequestBody RefreshRequest request) {
+        return authService.refresh(request);
+    }
+
+    @PostMapping("/logout")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void logout(@Valid @RequestBody RefreshRequest request) {
+        authService.logout(request);
     }
 }
