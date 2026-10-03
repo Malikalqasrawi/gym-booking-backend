@@ -40,11 +40,11 @@ class GymBookingApiTest extends ApiTestBase {
                 "fullName", "New Member", "email", email, "phone", "0790000000", "password", "Secret1234"));
         assertEquals(201, signUp.status(), signUp.body().toString());
 
-        Reply wrongCode = call("POST", "/api/auth/verify", null, Map.of("email", email, "code", "000000"));
+        Reply wrongCode = call("POST", "/api/auth/verify", null, Map.of("email", email, "code", "000000", "password", "Secret1234"));
         assertEquals(400, wrongCode.status());
 
         Reply verified = call("POST", "/api/auth/verify", null,
-                Map.of("email", email, "code", mailbox.latestVerificationCode(email)));
+                Map.of("email", email, "code", mailbox.latestVerificationCode(email), "password", "Secret1234"));
         assertEquals(200, verified.status(), verified.body().toString());
         assertEquals("MEMBER", verified.body().path("user").path("role").asText());
 

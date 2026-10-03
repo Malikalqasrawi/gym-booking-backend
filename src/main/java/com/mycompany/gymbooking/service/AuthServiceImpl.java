@@ -35,17 +35,24 @@ import com.mycompany.gymbooking.notification.NotificationSender;
 import com.mycompany.gymbooking.notification.SecurityAlerts;
 import com.mycompany.gymbooking.phone.PhoneNumbers;
 import com.mycompany.gymbooking.repository.UserRepository;
+import com.mycompany.gymbooking.security.ClientAddress;
 import com.mycompany.gymbooking.security.GoogleIdTokenVerifier;
 import com.mycompany.gymbooking.security.GoogleIdTokenVerifier.GoogleAccount;
+import com.mycompany.gymbooking.security.LoginGuard;
+import com.mycompany.gymbooking.security.RateLimiter;
 import com.mycompany.gymbooking.security.TokenService;
 import com.mycompany.gymbooking.service.TwoFactorService.CodeCheck;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -53,12 +60,17 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Sign-up, email verification, trainer invites, login (with a password or Google, and with or
- * without two-factor authentication) and password resets, with limits on code attempts, code resends and failed logins. Invites and
+ * without two-factor authentication) and password resets, with limits on code attempts, code resends,
+ * emails and failed logins. Invites and
  * password resets use the same one-time code fields as email verification: an invite before the
  * account is verified, a reset only after.
  */
 @Service
 public class AuthServiceImpl implements AuthService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthServiceImpl.class);
+    /** One bucket for the whole gym: emails anyone can trigger without logging in. */
+    private static final String AUTH_EMAILS_KEY = "auth-emails";
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
@@ -73,9 +85,13 @@ public class AuthServiceImpl implements AuthService {
     private final long codeValidityMinutes;
     private final int maxCodeAttempts;
     private final long resendCooldownSeconds;
-    private final int maxLoginAttempts;
-    private final long loginLockMinutes;
+    private final int maxCodesPerDay;
+    private final int authEmailsPerHour;
+    private final LoginGuard loginGuard;
+    private final RateLimiter rateLimiter;
     private final SecureRandom random = new SecureRandom();
+    /** Checked against when the email is unknown, so a login takes as long either way. */
+    private final String dummyPasswordHash;
 
     public AuthServiceImpl(UserRepository userRepository,
                            PasswordEncoder passwordEncoder,
@@ -86,12 +102,14 @@ public class AuthServiceImpl implements AuthService {
                            TokenService tokenService,
                            GoogleIdTokenVerifier googleVerifier,
                            VerificationCodeGenerator codeGenerator,
+                           LoginGuard loginGuard,
+                           RateLimiter rateLimiter,
                            Clock clock,
                            @Value("${app.verification.code-expiration-minutes}") long codeValidityMinutes,
                            @Value("${app.verification.max-attempts}") int maxCodeAttempts,
                            @Value("${app.verification.resend-cooldown-seconds}") long resendCooldownSeconds,
-                           @Value("${app.login.max-attempts}") int maxLoginAttempts,
-                           @Value("${app.login.lock-minutes}") long loginLockMinutes) {
+                           @Value("${app.verification.max-codes-per-day}") int maxCodesPerDay,
+                           @Value("${app.mail.auth-emails-per-hour}") int authEmailsPerHour) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.notificationSender = notificationSender;
@@ -105,26 +123,43 @@ public class AuthServiceImpl implements AuthService {
         this.codeValidityMinutes = codeValidityMinutes;
         this.maxCodeAttempts = maxCodeAttempts;
         this.resendCooldownSeconds = resendCooldownSeconds;
-        this.maxLoginAttempts = maxLoginAttempts;
-        this.loginLockMinutes = loginLockMinutes;
+        this.maxCodesPerDay = maxCodesPerDay;
+        this.authEmailsPerHour = authEmailsPerHour;
+        this.loginGuard = loginGuard;
+        this.rateLimiter = rateLimiter;
+        this.dummyPasswordHash = unusablePasswordHash();
     }
 
     @Override
     @Transactional
     public MessageResponse signUp(SignUpRequest request) {
         String email = normalizeEmail(request.email());
-
-        if (userRepository.existsByEmailIgnoreCase(email)) {
-            throw new ConflictException("EMAIL_TAKEN", "An account with this email already exists");
-        }
-
+        LocalDateTime now = LocalDateTime.now(clock);
+        // Hashed in every case, so the time taken doesn't reveal whether the account exists.
         String passwordHash = passwordEncoder.encode(request.password());
-        Member member = new Member(request.fullName().trim(), email, PhoneNumbers.toInternational(request.phone()), passwordHash);
+        String fullName = request.fullName().trim();
+        String phone = PhoneNumbers.toInternational(request.phone());
 
-        sendNewVerificationCode(member);
-        userRepository.save(member);
-
-        return new MessageResponse("Account created. We sent a 6-digit code to " + email);
+        Optional<User> existing = userRepository.findByEmailIgnoreCase(email);
+        if (existing.isEmpty()) {
+            requireAuthEmailCapacity();
+            Member member = new Member(fullName, email, phone, passwordHash);
+            sendNewVerificationCode(member, now);
+            userRepository.save(member);
+        } else if (existing.get() instanceof Member member && !member.isVerified()) {
+            // Never verified: the newest sign-up replaces it, so whoever proves they own the inbox
+            // also chose the password.
+            requireNewCodeAllowed(member, now);
+            requireAuthEmailCapacity();
+            member.replaceUnverifiedSignUp(fullName, phone, passwordHash);
+            sendNewVerificationCode(member, now);
+            userRepository.save(member);
+        } else {
+            // The account exists. Its owner is told by email, and the answer is the same as for a new
+            // sign-up, so it doesn't reveal who has an account here.
+            tellOwnerAboutSignUp(existing.get(), now);
+        }
+        return new MessageResponse("Check your email: we sent a message to " + email + ".");
     }
 
     @Override
@@ -153,6 +188,14 @@ public class AuthServiceImpl implements AuthService {
                     ? "The code is not correct. " + triesLeft + (triesLeft == 1 ? " try" : " tries") + " left."
                     : "The code is not correct. No tries left. Request a new code.");
         }
+        // The code proves the inbox; the password proves this is the sign-up it was sent for, and not
+        // one someone else made with this email.
+        if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+            user.recordWrongCode(maxCodeAttempts);
+            userRepository.save(user);
+            throw new BadRequestException("SIGN_UP_REPLACED",
+                    "This sign-up was replaced by a newer one with a different password. Sign up again to get a new code.");
+        }
 
         user.markVerified();
         userRepository.save(user);
@@ -169,15 +212,11 @@ public class AuthServiceImpl implements AuthService {
         userRepository.findByEmailIgnoreCase(email)
                 .filter(user -> user instanceof Member && !user.isVerified())
                 .ifPresent(user -> {
-                    // Per-account cooldown against inbox flooding. The error does reveal an unverified
-                    // account, but sign-up already reveals that via EMAIL_TAKEN.
-                    long wait = user.secondsUntilNewCodeAllowed(LocalDateTime.now(clock), resendCooldownSeconds);
-                    if (wait > 0) {
-                        throw new TooManyRequestsException("RESEND_TOO_SOON",
-                                "Please wait " + TooManyRequestsException.waitText(wait) + " before asking for a new code.",
-                                wait);
-                    }
-                    sendNewVerificationCode(user);
+                    // Limits against inbox flooding. The errors do reveal a recent unverified sign-up.
+                    LocalDateTime now = LocalDateTime.now(clock);
+                    requireNewCodeAllowed(user, now);
+                    requireAuthEmailCapacity();
+                    sendNewVerificationCode(user, now);
                     userRepository.save(user);
                 });
 
@@ -188,19 +227,25 @@ public class AuthServiceImpl implements AuthService {
     // Keep the failed-login counter even though an error is thrown.
     @Transactional(noRollbackFor = ApiException.class)
     public LoginResponse login(LoginRequest request) {
-        User user = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
-                .orElseThrow(this::invalidCredentials);
+        Optional<User> found = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()));
+        if (found.isEmpty()) {
+            passwordEncoder.matches(request.password(), dummyPasswordHash);   // same time as a real check
+            throw invalidCredentials();
+        }
+        User user = found.get();
         LocalDateTime now = LocalDateTime.now(clock);
+        String address = ClientAddress.current();
 
         // Checked before the password so the correct password is refused too while locked.
-        if (user.isLoginLocked(now)) {
-            throw accountLocked(user, now, "Too many wrong attempts.");
+        Optional<LocalDateTime> lock = loginGuard.lockedUntil(user, address, now);
+        if (lock.isPresent()) {
+            throw accountLocked(lock.get(), now, "Too many wrong attempts.");
         }
 
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
-            boolean justLocked = user.recordFailedLogin(maxLoginAttempts, now.plusMinutes(loginLockMinutes));
+            boolean justLocked = loginGuard.recordWrong(user, address, now);
             userRepository.save(user);
-            throw justLocked ? accountLocked(user, now, "Too many wrong passwords.") : invalidCredentials();
+            throw justLocked ? lockedNow(user, address, now, "Too many wrong passwords.") : invalidCredentials();
         }
 
         // With two-factor authentication the password is only the first step, so wrong attempts keep
@@ -208,7 +253,7 @@ public class AuthServiceImpl implements AuthService {
         // every few wrong codes to keep guessing.
         boolean codeStepFollows = user.isTwoFactorEnabled() || user.needsTwoFactorSetup();
         if (!codeStepFollows) {
-            user.recordSuccessfulLogin();
+            loginGuard.recordSuccess(user, address);
         }
         if (!user.isVerified()) {
             throw new ForbiddenException("EMAIL_NOT_VERIFIED", "Please verify your email first");
@@ -237,7 +282,7 @@ public class AuthServiceImpl implements AuthService {
         // Google has proved who this is, so earlier wrong passwords no longer count, unless a code
         // from the authenticator app is still needed.
         if (!user.isTwoFactorEnabled()) {
-            user.recordSuccessfulLogin();
+            loginGuard.recordSuccess(user, ClientAddress.current());
         }
         userRepository.save(user);
         return finishLogin(user);
@@ -276,7 +321,7 @@ public class AuthServiceImpl implements AuthService {
             throw loginExpired();
         }
         List<String> recoveryCodes = twoFactorService.confirmSetup(user, request.code());
-        user.recordSuccessfulLogin();
+        loginGuard.recordSuccess(user, ClientAddress.current());
         // From now on every admin session has passed two-factor login, so any older ones end.
         user.endAllSessions();
         userRepository.save(user);
@@ -323,9 +368,13 @@ public class AuthServiceImpl implements AuthService {
                 .filter(user -> user.isVerified() && user.isActive())
                 // Within the cooldown no new code is sent; the last one still works.
                 .filter(user -> user.secondsUntilNewCodeAllowed(now, resendCooldownSeconds) == 0)
+                // A few codes a day at most, or the 6 digits could be guessed over weeks of new codes.
+                .filter(user -> !user.emailCodeLimitReached(now.toLocalDate(), maxCodesPerDay))
+                .filter(user -> authEmailAllowed())
                 .ifPresent(user -> {
                     String code = codeGenerator.generate();
                     user.issueVerificationCode(code, now, now.plusMinutes(codeValidityMinutes));
+                    user.countEmailCode(now.toLocalDate());
                     userRepository.save(user);
                     notificationSender.send(
                             user.getEmail(),
@@ -364,7 +413,7 @@ public class AuthServiceImpl implements AuthService {
         boolean hadPassword = user.isPasswordSet();
         user.changePasswordHash(passwordEncoder.encode(request.password()));
         user.markVerified();            // clears the code so it can't be used again
-        user.recordSuccessfulLogin();   // proving the email also lifts a login lock
+        loginGuard.clearAll(user);      // proving the email also lifts the login locks
         user.endAllSessions();          // whoever knew the old password is logged out
         userRepository.save(user);
         securityAlerts.passwordReset(user, hadPassword);
@@ -392,7 +441,7 @@ public class AuthServiceImpl implements AuthService {
         }
 
         user.changePasswordHash(passwordEncoder.encode(request.newPassword()));
-        user.recordSuccessfulLogin();
+        loginGuard.recordSuccess(user, ClientAddress.current());
         user.endAllSessions();
         userRepository.save(user);
         securityAlerts.passwordChanged(user);
@@ -423,7 +472,7 @@ public class AuthServiceImpl implements AuthService {
             }
             requireSecondFactor(user, request.code());
         }
-        user.recordSuccessfulLogin();
+        loginGuard.recordSuccess(user, ClientAddress.current());
         TwoFactorSetupResponse setup = twoFactorService.startSetup(user);
         userRepository.save(user);
         return setup;
@@ -462,18 +511,71 @@ public class AuthServiceImpl implements AuthService {
         securityAlerts.twoFactorOff(user);
     }
 
-    private void sendNewVerificationCode(User user) {
+    /**
+     * Emails a new verification code. The name isn't in it: before verification it was typed by
+     * whoever signed up, who may not own this inbox.
+     */
+    private void sendNewVerificationCode(User user, LocalDateTime now) {
         String code = codeGenerator.generate();
-        LocalDateTime now = LocalDateTime.now(clock);
         user.issueVerificationCode(code, now, now.plusMinutes(codeValidityMinutes));
+        user.countEmailCode(now.toLocalDate());
 
         notificationSender.send(
                 user.getEmail(),
                 "Your Gym Booking verification code",
-                "Hi " + user.getFullName() + ",\n\n"
+                "Hello,\n\n"
                         + "Your verification code is: " + code + "\n"
                         + "It expires in " + codeValidityMinutes + " minutes.\n\n"
                         + "If you didn't sign up, you can ignore this email.");
+    }
+
+    /** Emails the owner of an existing account that someone tried to sign up with their address. */
+    private void tellOwnerAboutSignUp(User user, LocalDateTime now) {
+        LocalDate today = now.toLocalDate();
+        if (user.emailCodeLimitReached(today, maxCodesPerDay) || !authEmailAllowed()) {
+            return;
+        }
+        user.countEmailCode(today);
+        userRepository.save(user);
+        notificationSender.send(
+                user.getEmail(),
+                "Someone tried to sign up with your email",
+                "Hello,\n\n"
+                        + "Someone just tried to create a Gym Booking account with this email address, but you already have one.\n\n"
+                        + "If it was you, log in instead. If you forgot your password, use \"Forgot password?\" on the login screen.\n\n"
+                        + "If it wasn't you, you can ignore this email. Nothing about your account has changed.");
+    }
+
+    /** Throws if this address must wait for its next code, or already got today's maximum. */
+    private void requireNewCodeAllowed(User user, LocalDateTime now) {
+        long wait = user.secondsUntilNewCodeAllowed(now, resendCooldownSeconds);
+        if (wait > 0) {
+            throw new TooManyRequestsException("RESEND_TOO_SOON",
+                    "Please wait " + TooManyRequestsException.waitText(wait) + " before asking for a new code.", wait);
+        }
+        LocalDate today = now.toLocalDate();
+        if (user.emailCodeLimitReached(today, maxCodesPerDay)) {
+            long untilTomorrow = Duration.between(now, today.plusDays(1).atStartOfDay()).toSeconds();
+            throw new TooManyRequestsException("TOO_MANY_CODES",
+                    "You've asked for " + maxCodesPerDay + " codes today. Please try again tomorrow.", untilTomorrow);
+        }
+    }
+
+    /** Throws when the gym-wide limit on emails sent without logging in is reached for now. */
+    private void requireAuthEmailCapacity() {
+        if (!authEmailAllowed()) {
+            throw new TooManyRequestsException("EMAIL_BUSY",
+                    "We're sending a lot of emails right now. Please try again in a few minutes.", 300);
+        }
+    }
+
+    /** Takes one email from the gym-wide hourly allowance, if any is left. */
+    private boolean authEmailAllowed() {
+        boolean allowed = rateLimiter.tryConsume(AUTH_EMAILS_KEY, authEmailsPerHour, Duration.ofHours(1)).allowed();
+        if (!allowed) {
+            log.warn("The hourly limit of {} sign-up and password emails is reached", authEmailsPerHour);
+        }
+        return allowed;
     }
 
     private AuthResponse buildAuthResponse(User user) {
@@ -538,13 +640,15 @@ public class AuthServiceImpl implements AuthService {
     /** Wrong passwords count like failed logins, so a logged-in phone can't be used to guess the password. */
     private void requirePassword(User user, String password, String wrongPasswordMessage) {
         LocalDateTime now = LocalDateTime.now(clock);
-        if (user.isLoginLocked(now)) {
-            throw accountLocked(user, now, "Too many wrong attempts.");
+        String address = ClientAddress.current();
+        Optional<LocalDateTime> lock = loginGuard.lockedUntil(user, address, now);
+        if (lock.isPresent()) {
+            throw accountLocked(lock.get(), now, "Too many wrong attempts.");
         }
         if (!passwordEncoder.matches(password, user.getPasswordHash())) {
-            boolean justLocked = user.recordFailedLogin(maxLoginAttempts, now.plusMinutes(loginLockMinutes));
+            boolean justLocked = loginGuard.recordWrong(user, address, now);
             userRepository.save(user);
-            throw justLocked ? accountLocked(user, now, "Too many wrong passwords.")
+            throw justLocked ? lockedNow(user, address, now, "Too many wrong passwords.")
                     : new BadRequestException("WRONG_PASSWORD", wrongPasswordMessage);
         }
     }
@@ -555,18 +659,20 @@ public class AuthServiceImpl implements AuthService {
      */
     private void requireSecondFactor(User user, String code) {
         LocalDateTime now = LocalDateTime.now(clock);
-        if (user.isLoginLocked(now)) {
-            throw accountLocked(user, now, "Too many wrong attempts.");
+        String address = ClientAddress.current();
+        Optional<LocalDateTime> lock = loginGuard.lockedUntil(user, address, now);
+        if (lock.isPresent()) {
+            throw accountLocked(lock.get(), now, "Too many wrong attempts.");
         }
         CodeCheck result = twoFactorService.check(user, code);
         if (result == CodeCheck.ACCEPTED) {
-            user.recordSuccessfulLogin();
+            loginGuard.recordSuccess(user, address);
             return;
         }
-        boolean justLocked = user.recordFailedLogin(maxLoginAttempts, now.plusMinutes(loginLockMinutes));
+        boolean justLocked = loginGuard.recordWrong(user, address, now);
         userRepository.save(user);
         if (justLocked) {
-            throw accountLocked(user, now, "Too many wrong codes.");
+            throw lockedNow(user, address, now, "Too many wrong codes.");
         }
         throw result == CodeCheck.ALREADY_USED
                 ? new BadRequestException("CODE_ALREADY_USED",
@@ -589,8 +695,13 @@ public class AuthServiceImpl implements AuthService {
         return new UnauthorizedException("LOGIN_EXPIRED", "Your login has expired. Please log in again.");
     }
 
-    private TooManyRequestsException accountLocked(User user, LocalDateTime now, String reason) {
-        long seconds = Math.max(1, Duration.between(now, user.getLoginLockedUntil()).toSeconds());
+    /** For an attempt that just started a lock. */
+    private TooManyRequestsException lockedNow(User user, String address, LocalDateTime now, String reason) {
+        return accountLocked(loginGuard.lockedUntil(user, address, now).orElse(now), now, reason);
+    }
+
+    private TooManyRequestsException accountLocked(LocalDateTime until, LocalDateTime now, String reason) {
+        long seconds = Math.max(1, Duration.between(now, until).toSeconds());
         return new TooManyRequestsException("ACCOUNT_LOCKED",
                 reason + " Try again in " + TooManyRequestsException.waitText(seconds) + ".",
                 seconds);

@@ -10,7 +10,6 @@ import com.mycompany.gymbooking.repository.BranchRepository;
 import com.mycompany.gymbooking.repository.UserRepository;
 import com.mycompany.gymbooking.repository.WorkingHoursRepository;
 import java.math.BigDecimal;
-import java.security.SecureRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,8 +19,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Adds any missing {@link StarterData} at startup. Existing records are left untouched, so it is
- * safe to run on every start.
+ * Adds any missing {@link StarterData} at startup: the branches, the first admin (once a password is
+ * configured) and, only when app.seed.demo-trainers is on, the demo trainers. Existing records are
+ * left untouched, so it is safe to run on every start.
  */
 @Component
 public class DataSeeder implements CommandLineRunner {
@@ -29,24 +29,27 @@ public class DataSeeder implements CommandLineRunner {
     private static final Logger log = LoggerFactory.getLogger(DataSeeder.class);
     private static final String ADMIN_EMAIL = "admin@gym.com";
     /** Demo trainers exist only for local testing; their shared password is in the README. */
-    private static final String TRAINER_PASSWORD = "Trainer1234";
+    private static final String DEMO_TRAINER_PASSWORD = "Trainer1234";
 
     private final UserRepository userRepository;
     private final BranchRepository branchRepository;
     private final WorkingHoursRepository workingHoursRepository;
     private final PasswordEncoder passwordEncoder;
     private final String adminInitialPassword;
+    private final boolean seedDemoTrainers;
 
     public DataSeeder(UserRepository userRepository,
                       BranchRepository branchRepository,
                       WorkingHoursRepository workingHoursRepository,
                       PasswordEncoder passwordEncoder,
-                      @Value("${app.admin.initial-password:}") String adminInitialPassword) {
+                      @Value("${app.admin.initial-password:}") String adminInitialPassword,
+                      @Value("${app.seed.demo-trainers:false}") boolean seedDemoTrainers) {
         this.userRepository = userRepository;
         this.branchRepository = branchRepository;
         this.workingHoursRepository = workingHoursRepository;
         this.passwordEncoder = passwordEncoder;
         this.adminInitialPassword = adminInitialPassword;
+        this.seedDemoTrainers = seedDemoTrainers;
     }
 
     @Override
@@ -54,6 +57,9 @@ public class DataSeeder implements CommandLineRunner {
     public void run(String... args) {
         seedBranches();   // trainers are assigned to branches, so these go first
         seedAdmin();
+        if (!seedDemoTrainers) {
+            return;
+        }
 
         int created = 0;
         for (int i = 0; i < StarterData.TRAINERS.size(); i++) {
@@ -62,7 +68,7 @@ public class DataSeeder implements CommandLineRunner {
             }
         }
         if (created > 0) {
-            log.info("Seeded {} trainers (password for all: {})", created, TRAINER_PASSWORD);
+            log.info("Seeded {} demo trainers (see the README for their login)", created);
         }
     }
 
@@ -83,39 +89,22 @@ public class DataSeeder implements CommandLineRunner {
 
     /**
      * Creates the first admin account with app.admin.initial-password (set in local.properties or
-     * .env). Without one, a random password is generated and printed once, so no working admin
-     * password is ever in the code.
+     * .env). Without one, no admin is created, so a working admin password is never in the code or
+     * the log.
      */
     private void seedAdmin() {
         if (userRepository.existsByEmailIgnoreCase(ADMIN_EMAIL)) {
             return;
         }
-        boolean generated = adminInitialPassword.isBlank();
-        String password = generated ? randomPassword() : adminInitialPassword;
-        Admin admin = new Admin("Gym Admin", ADMIN_EMAIL, "+962790000000", passwordEncoder.encode(password));
+        if (adminInitialPassword.isBlank()) {
+            log.warn("There is no admin account yet. Set app.admin.initial-password (ADMIN_PASSWORD for Docker) "
+                    + "and restart to create {}.", ADMIN_EMAIL);
+            return;
+        }
+        Admin admin = new Admin("Gym Admin", ADMIN_EMAIL, "+962790000000", passwordEncoder.encode(adminInitialPassword));
         admin.markVerified();
         userRepository.save(admin);
-        if (generated) {
-            log.warn("Created the admin account {} with this generated password: {}  "
-                    + "It is shown only once. Change it in the app under Profile > Change password.", ADMIN_EMAIL, password);
-        } else {
-            log.info("Created the admin account {} with the password from app.admin.initial-password", ADMIN_EMAIL);
-        }
-    }
-
-    /** 16 characters from an alphabet without look-alikes (no 0/O, 1/l/I), always with a letter and a digit. */
-    private static String randomPassword() {
-        String letters = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
-        String digits = "23456789";
-        String all = letters + digits;
-        SecureRandom random = new SecureRandom();
-        StringBuilder password = new StringBuilder();
-        password.append(letters.charAt(random.nextInt(letters.length())));
-        password.append(digits.charAt(random.nextInt(digits.length())));
-        while (password.length() < 16) {
-            password.append(all.charAt(random.nextInt(all.length())));
-        }
-        return password.toString();
+        log.info("Created the admin account {} with the password from app.admin.initial-password", ADMIN_EMAIL);
     }
 
     /**
@@ -129,7 +118,7 @@ public class DataSeeder implements CommandLineRunner {
             return false;
         }
         String phone = String.format("+96279%07d", number);
-        Trainer trainer = new Trainer(seed.name(), seed.email(), phone, passwordEncoder.encode(TRAINER_PASSWORD),
+        Trainer trainer = new Trainer(seed.name(), seed.email(), phone, passwordEncoder.encode(DEMO_TRAINER_PASSWORD),
                 seed.specialty(), seed.bio(), seed.years());
         trainer.markVerified();
         branchRepository.findByNameIgnoreCase(seed.branchName()).ifPresent(trainer::assignToBranch);

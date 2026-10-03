@@ -3,6 +3,7 @@ package com.mycompany.gymbooking.service;
 import com.mycompany.gymbooking.dto.TwoFactorSetupResponse;
 import com.mycompany.gymbooking.exception.BadRequestException;
 import com.mycompany.gymbooking.model.User;
+import com.mycompany.gymbooking.security.SecretBox;
 import com.mycompany.gymbooking.security.Sha256;
 import com.mycompany.gymbooking.security.Totp;
 import java.security.SecureRandom;
@@ -15,7 +16,8 @@ import org.springframework.stereotype.Service;
 
 /**
  * Two-factor login with an authenticator app: setting it up, recovery codes, and checking codes.
- * Limits on wrong codes are applied by the callers in AuthServiceImpl, like for passwords.
+ * Limits on wrong codes are applied by the callers in AuthServiceImpl, like for passwords. Secrets
+ * are stored encrypted with {@link SecretBox}.
  */
 @Service
 public class TwoFactorService {
@@ -35,16 +37,18 @@ public class TwoFactorService {
     }
 
     private final Clock clock;
+    private final SecretBox secretBox;
     private final SecureRandom random = new SecureRandom();
 
-    public TwoFactorService(Clock clock) {
+    public TwoFactorService(Clock clock, SecretBox secretBox) {
         this.clock = clock;
+        this.secretBox = secretBox;
     }
 
     /** Creates a new secret for the user's authenticator app. Two-factor login stays as it is until confirmed. */
     public TwoFactorSetupResponse startSetup(User user) {
         String secret = Totp.newSecret(random);
-        user.startTwoFactorSetup(secret);
+        user.startTwoFactorSetup(secretBox.seal(secret));
         return new TwoFactorSetupResponse(secret, Totp.otpauthUri(ISSUER, user.getEmail(), secret));
     }
 
@@ -53,7 +57,7 @@ public class TwoFactorService {
      * recovery codes. Any old secret and recovery codes stop working.
      */
     public List<String> confirmSetup(User user, String code) {
-        String pending = user.getPendingTwoFactorSecret();
+        String pending = secretBox.open(user.getPendingTwoFactorSecret());
         if (pending == null) {
             throw new BadRequestException("TWO_FACTOR_SETUP_NOT_STARTED", "Start the setup again to get a new QR code.");
         }
@@ -81,7 +85,7 @@ public class TwoFactorService {
     public CodeCheck check(User user, String code) {
         String normalized = normalize(code);
         if (normalized.matches("[0-9]{" + Totp.DIGITS + "}")) {
-            OptionalLong step = Totp.matchingStep(user.getTwoFactorSecret(), normalized, clock.instant());
+            OptionalLong step = Totp.matchingStep(secretBox.open(user.getTwoFactorSecret()), normalized, clock.instant());
             if (step.isEmpty()) {
                 return CodeCheck.WRONG;
             }

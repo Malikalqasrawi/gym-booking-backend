@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 class TotpTest {
 
     /** The RFC's SHA-1 test key, the ASCII text "12345678901234567890", in Base32. */
-    private static final String RFC_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    private static final String RFC_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";   // gitleaks:allow (public test key)
 
     @Test
     @DisplayName("codes match the RFC 6238 test values (last 6 of their 8 digits)")

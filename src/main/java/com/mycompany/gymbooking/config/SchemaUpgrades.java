@@ -9,7 +9,9 @@ import org.springframework.stereotype.Component;
 
 /**
  * Schema changes that ddl-auto=update can't make, since it never alters existing columns.
- * Older databases have bookings.status as a MySQL ENUM, which rejects newer statuses such as PAID.
+ * Older databases have bookings.status as a MySQL ENUM, which rejects newer statuses such as PAID,
+ * users.verification_code as 6 characters, too short for the SHA-256 of the code stored now, and
+ * the two-factor secrets as 32 characters, too short for their encrypted form.
  * Each step checks the current schema first, so it is safe to run on every startup.
  */
 @Component
@@ -26,6 +28,26 @@ public class SchemaUpgrades {
     @PostConstruct
     public void upgrade() {
         enumColumnToVarchar("bookings", "status");
+        widenVarchar("users", "verification_code", 64);
+        widenVarchar("users", "two_factor_secret", 128);
+        widenVarchar("users", "pending_two_factor_secret", 128);
+    }
+
+    private void widenVarchar(String table, String column, int length) {
+        List<Long> lengths = jdbc.queryForList("""
+                SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = SCHEMA() AND LOWER(TABLE_NAME) = ? AND LOWER(COLUMN_NAME) = ?
+                """, Long.class, table, column);
+        if (lengths.isEmpty() || lengths.get(0) == null || lengths.get(0) >= length) {
+            return;
+        }
+        // Identifiers are constants from this class, never user input
+        jdbc.execute("ALTER TABLE " + table + " MODIFY " + column + " VARCHAR(" + length + ")");
+        if (column.equals("verification_code")) {
+            // Codes stored before weren't hashed and can't be checked any more; a new code is needed.
+            jdbc.update("UPDATE " + table + " SET " + column + " = NULL");
+        }
+        log.info("Database upgraded: {}.{} is now VARCHAR({})", table, column, length);
     }
 
     private void enumColumnToVarchar(String table, String column) {

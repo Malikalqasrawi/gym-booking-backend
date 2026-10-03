@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.mycompany.gymbooking.config.TwoFactorSecretEncryption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -144,6 +145,30 @@ class TwoFactorApiTest extends ApiTestBase {
         Reply passwordWhileLocked = passwordStep(email, PASSWORD);
         assertEquals("ACCOUNT_LOCKED", passwordWhileLocked.code());
         assertTrue(passwordWhileLocked.body().path("message").asText().startsWith("Too many wrong attempts."));
+    }
+
+    @Test
+    @DisplayName("secrets are stored encrypted; ones saved before that are encrypted at startup and keep working")
+    void secretsAreEncrypted() throws Exception {
+        String session = newMember();
+        String email = memberEmail(session);
+        Enabled enabled = enable(session);
+        String stored = storedSecret(email);
+        assertTrue(stored.startsWith("v1:"), stored);
+        assertFalse(stored.contains(enabled.secret()), "a copy of the database doesn't give the codes");
+
+        jdbc().update("update users set two_factor_secret = ? where email = ?", enabled.secret(), email);   // as saved before
+        backend.getBean(TwoFactorSecretEncryption.class).run();
+        assertTrue(storedSecret(email).startsWith("v1:"));
+
+        forgetUsedCodes(email);
+        String challenge = passwordStep(email, PASSWORD).body().path("challengeToken").asText();
+        Reply loggedIn = codeStep(challenge, currentCode(enabled.secret()));
+        assertEquals(200, loggedIn.status(), loggedIn.body().toString());
+    }
+
+    private static String storedSecret(String email) {
+        return jdbc().queryForObject("select two_factor_secret from users where email = ?", String.class, email);
     }
 
     @Test

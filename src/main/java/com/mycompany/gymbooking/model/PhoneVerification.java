@@ -50,11 +50,11 @@ public class PhoneVerification {
     }
 
     /**
-     * Seconds until another code may be sent to this number, rounded up; 0 if allowed now. After
-     * fixing a mistyped number the code goes out right away; the daily limit still applies.
+     * Seconds until another code may be sent, rounded up; 0 if allowed now. This also applies after
+     * changing the number, or changing it each time would allow a burst of paid text messages.
      */
-    public long secondsUntilResend(String phone, LocalDateTime now, long cooldownSeconds) {
-        if (sentAt == null || !phone.equals(this.phone)) {
+    public long secondsUntilResend(LocalDateTime now, long cooldownSeconds) {
+        if (sentAt == null) {
             return 0;
         }
         long millisLeft = Duration.between(now, sentAt.plusSeconds(cooldownSeconds)).toMillis();

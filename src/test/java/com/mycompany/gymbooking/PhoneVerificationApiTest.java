@@ -51,7 +51,7 @@ class PhoneVerificationApiTest extends ApiTestBase {
     }
 
     @Test
-    @DisplayName("a different number has to be confirmed again, and a code only works for the number it went to")
+    @DisplayName("a different number has to be confirmed again, a code only works for the number it went to, and the wait still applies")
     void changingNumber() throws Exception {
         String email = "change" + MEMBER_NUMBER.incrementAndGet() + "@test.com";
         String member = signUp(email, "0795551235");
@@ -66,8 +66,11 @@ class PhoneVerificationApiTest extends ApiTestBase {
         assertFalse(changed.body().path("phoneVerified").asBoolean());
         assertEquals("PHONE_NOT_VERIFIED", book(member, sara, "11:00").code());
 
+        assertEquals("RESEND_TOO_SOON", call("POST", "/api/users/me/phone/code", member, null).code(),
+                "changing the number doesn't skip the wait, or every change would be another paid SMS");
+        allowNewCode(email);
         Reply sentToNewNumber = call("POST", "/api/users/me/phone/code", member, null);
-        assertEquals(200, sentToNewNumber.status(), "no wait after fixing the number: " + sentToNewNumber.body());
+        assertEquals(200, sentToNewNumber.status(), sentToNewNumber.body().toString());
         String codeForNewNumber = sms.latestCode("+962781234567");
         call("PUT", "/api/users/me/phone", member, Map.of("phone", "0771234567"));
         assertEquals("CODE_EXPIRED", confirm(member, codeForNewNumber).code(), "the code went to another number");
@@ -114,8 +117,34 @@ class PhoneVerificationApiTest extends ApiTestBase {
 
         String member = signUp("saudi" + MEMBER_NUMBER.incrementAndGet() + "@test.com", "+966 50 123 4567");
         assertEquals("+966501234567", call("GET", "/api/users/me", member, null).body().path("phone").asText());
+        Reply abroad = call("POST", "/api/users/me/phone/code", member, null);
+        assertEquals("SMS_COUNTRY_NOT_SUPPORTED", abroad.code(), "codes are only texted to Jordan");
+        assertEquals(0, sms.count("+966501234567"));
         assertEquals("VALIDATION_FAILED", call("PUT", "/api/users/me/phone", member, Map.of("phone", "06 461 2345")).code(),
                 "a landline can't get the code");
+    }
+
+    @Test
+    @DisplayName("the whole gym can send a limited number of SMS codes a day")
+    void gymWideDailyLimit() throws Exception {
+        String first = "daily" + MEMBER_NUMBER.incrementAndGet() + "@test.com";
+        String member = signUp(first, "0795551237");
+        assertEquals(200, call("POST", "/api/users/me/phone/code", member, null).status());
+        Integer realCount = jdbc().queryForObject(
+                "select sends_that_day from phone_verifications where user_id = (select id from users where email = ?)",
+                Integer.class, first);
+        // Pretend the gym already sent its 200 codes today.
+        jdbc().update("update phone_verifications set sends_that_day = 200 where user_id = (select id from users where email = ?)", first);
+        try {
+            String other = signUp("daily" + MEMBER_NUMBER.incrementAndGet() + "@test.com", "0795551238");
+            Reply limit = call("POST", "/api/users/me/phone/code", other, null);
+            assertEquals("SMS_LIMIT_REACHED", limit.code());
+            assertEquals(429, limit.status());
+            assertEquals(0, sms.count("+962795551238"));
+        } finally {
+            jdbc().update("update phone_verifications set sends_that_day = ? where user_id = (select id from users where email = ?)",
+                    realCount, first);
+        }
     }
 
     @Test
@@ -139,7 +168,7 @@ class PhoneVerificationApiTest extends ApiTestBase {
                 "fullName", "Test Member", "email", email, "phone", phone, "password", "Secret1234"));
         assertEquals(201, signUp.status(), signUp.body().toString());
         Reply verified = call("POST", "/api/auth/verify", null,
-                Map.of("email", email, "code", mailbox.latestVerificationCode(email)));
+                Map.of("email", email, "code", mailbox.latestVerificationCode(email), "password", "Secret1234"));
         assertEquals(200, verified.status(), verified.body().toString());
         return verified.body().path("token").asText();
     }

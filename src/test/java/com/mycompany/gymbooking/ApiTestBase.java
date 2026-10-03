@@ -45,6 +45,8 @@ abstract class ApiTestBase {
     protected static final String ADMIN_EMAIL = "admin@gym.com";
     /** The first admin's password, set through configuration like in local.properties. */
     protected static final String ADMIN_PASSWORD = "AdminTest123";
+    /** Encrypts two-factor secrets in the test database. */
+    private static final String ENCRYPTION_KEY = Base64.getEncoder().encodeToString(new byte[32]);
     protected static final ZoneId AMMAN = ZoneId.of("Asia/Amman");
     protected static final ObjectMapper JSON = new ObjectMapper();
     protected static final HttpClient HTTP = HttpClient.newHttpClient();
@@ -102,10 +104,13 @@ abstract class ApiTestBase {
                         "--app.payments.stripe.api-base=" + stripe.baseUrl(),
                         "--app.payments.stripe.webhook-secret=" + WEBHOOK_SECRET,
                         "--app.admin.initial-password=" + ADMIN_PASSWORD,
+                        "--app.seed.demo-trainers=true",
+                        "--app.security.encryption-key=" + ENCRYPTION_KEY,
+                        "--app.mail.auth-emails-per-hour=100000",
                         "--app.auth.google.client-id=" + FakeGoogle.CLIENT_ID,
                         "--app.auth.google.jwks-uri=" + google.keysUrl(),
                         "--spring.main.banner-mode=off");
-        baseUrl = "http://localhost:" + backend.getEnvironment().getProperty("local.server.port");
+        baseUrl = "http://127.0.0.1:" + backend.getEnvironment().getProperty("local.server.port");
 
         saraToken = login("sara.trainer@gym.com", "Trainer1234");
         linaToken = login("lina.trainer@gym.com", "Trainer1234");
@@ -203,7 +208,7 @@ abstract class ApiTestBase {
                 "fullName", "Test Member", "email", email, "phone", "0790000000", "password", "Secret1234"));
         assertEquals(201, signUp.status(), signUp.body().toString());
         Reply verified = call("POST", "/api/auth/verify", null,
-                Map.of("email", email, "code", mailbox.latestVerificationCode(email)));
+                Map.of("email", email, "code", mailbox.latestVerificationCode(email), "password", "Secret1234"));
         assertEquals(200, verified.status(), verified.body().toString());
         jdbc().update("update users set phone_verified_at = ? where email = ?", LocalDateTime.now(AMMAN), email);
         return verified.body().path("token").asText();
