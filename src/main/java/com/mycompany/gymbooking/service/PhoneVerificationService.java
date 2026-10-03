@@ -9,11 +9,19 @@ import com.mycompany.gymbooking.exception.TooManyRequestsException;
 import com.mycompany.gymbooking.model.PhoneVerification;
 import com.mycompany.gymbooking.model.User;
 import com.mycompany.gymbooking.phone.PhoneCodes;
+import com.mycompany.gymbooking.phone.PhoneNumbers;
 import com.mycompany.gymbooking.repository.PhoneVerificationRepository;
 import com.mycompany.gymbooking.repository.UserRepository;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,10 +29,13 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Confirms that users own their phone number: a code is texted to it, and entering the code marks
  * the number as verified. Members do this before their first booking. Every text message costs
- * money, so codes are limited: one a minute and a few a day per account, with 5 tries each.
+ * money, so codes are limited: one a minute and a few a day per account, with 5 tries each, only to
+ * the allowed countries, and a daily total for the whole gym.
  */
 @Service
 public class PhoneVerificationService {
+
+    private static final Logger log = LoggerFactory.getLogger(PhoneVerificationService.class);
 
     private final UserRepository userRepository;
     private final PhoneVerificationRepository verifications;
@@ -34,6 +45,8 @@ public class PhoneVerificationService {
     private final int maxAttempts;
     private final long resendCooldownSeconds;
     private final int maxCodesPerDay;
+    private final Set<String> allowedCountries;
+    private final long maxSmsPerDay;
 
     public PhoneVerificationService(UserRepository userRepository,
                                     PhoneVerificationRepository verifications,
@@ -42,7 +55,9 @@ public class PhoneVerificationService {
                                     @Value("${app.phone.code-expiration-minutes}") long codeValidityMinutes,
                                     @Value("${app.phone.max-attempts}") int maxAttempts,
                                     @Value("${app.phone.resend-cooldown-seconds}") long resendCooldownSeconds,
-                                    @Value("${app.phone.max-codes-per-day}") int maxCodesPerDay) {
+                                    @Value("${app.phone.max-codes-per-day}") int maxCodesPerDay,
+                                    @Value("${app.sms.allowed-countries}") String allowedCountries,
+                                    @Value("${app.sms.max-per-day}") long maxSmsPerDay) {
         this.userRepository = userRepository;
         this.verifications = verifications;
         this.phoneCodes = phoneCodes;
@@ -51,6 +66,11 @@ public class PhoneVerificationService {
         this.maxAttempts = maxAttempts;
         this.resendCooldownSeconds = resendCooldownSeconds;
         this.maxCodesPerDay = maxCodesPerDay;
+        this.allowedCountries = Arrays.stream(allowedCountries.split(","))
+                .map(code -> code.trim().toUpperCase(Locale.ROOT))
+                .filter(code -> !code.isEmpty())
+                .collect(Collectors.toSet());
+        this.maxSmsPerDay = maxSmsPerDay;
     }
 
     /** Texts a new code to the user's phone number. */
@@ -64,9 +84,14 @@ public class PhoneVerificationService {
             throw new ConflictException("PHONE_ALREADY_VERIFIED", "Your phone number is already confirmed.");
         }
 
+        if (!PhoneNumbers.country(user.getPhone()).filter(allowedCountries::contains).isPresent()) {
+            throw new BadRequestException("SMS_COUNTRY_NOT_SUPPORTED",
+                    "We can only text codes to Jordanian mobile numbers for now. Change your number in Profile.");
+        }
+
         LocalDateTime now = LocalDateTime.now(clock);
         PhoneVerification verification = verifications.findById(userId).orElseGet(() -> new PhoneVerification(userId));
-        long wait = verification.secondsUntilResend(user.getPhone(), now, resendCooldownSeconds);
+        long wait = verification.secondsUntilResend(now, resendCooldownSeconds);
         if (wait > 0) {
             throw new TooManyRequestsException("RESEND_TOO_SOON",
                     "Please wait " + TooManyRequestsException.waitText(wait) + " before asking for a new code.", wait);
@@ -75,6 +100,13 @@ public class PhoneVerificationService {
             long untilTomorrow = Duration.between(now, now.toLocalDate().plusDays(1).atStartOfDay()).toSeconds();
             throw new TooManyRequestsException("TOO_MANY_CODES",
                     "You've asked for " + maxCodesPerDay + " codes today. Please try again tomorrow.", untilTomorrow);
+        }
+        LocalDate today = now.toLocalDate();
+        if (verifications.countSentOn(today) >= maxSmsPerDay) {
+            log.warn("The gym's daily limit of {} SMS codes is reached; no more codes until tomorrow", maxSmsPerDay);
+            long untilTomorrow = Duration.between(now, today.plusDays(1).atStartOfDay()).toSeconds();
+            throw new TooManyRequestsException("SMS_LIMIT_REACHED",
+                    "We can't send more codes today. Please try again tomorrow.", untilTomorrow);
         }
 
         // Sent first: if the SMS fails, nothing is recorded and the user can try again right away.

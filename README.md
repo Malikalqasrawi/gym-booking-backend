@@ -38,7 +38,7 @@ Booking a trainer over the phone or by chat breaks in predictable ways. Two peop
 | Admin | Add trainers by email invite, edit profiles and weekly schedules, deactivate (cancels and refunds their upcoming bookings) or reactivate |
 | Gym operations | See every booking with contact details, cancel any session before it starts (full refund), close a branch or give a trainer time off for whole days or set hours |
 | Reviews | Members rate a paid session (1 to 5 stars and an optional comment) for 30 days after it takes place, once; trainers reply; admins hide reviews with a reason the member is emailed; average ratings on every trainer |
-| Hardening | Per-IP rate limiting, owner-scoped queries, optimistic and pessimistic locking, secrets kept out of the repo |
+| Hardening | Per-IP rate limiting, login lockout per network address, owner-scoped queries, optimistic and pessimistic locking, hashed codes and encrypted two-factor secrets, limits on emails and SMS anyone can trigger, a production mode that refuses unsafe settings, secrets kept out of the repo and scanned for in CI |
 
 ## Architecture
 
@@ -111,7 +111,12 @@ sequenceDiagram
 - **Short access tokens, rotating refresh tokens.** Access tokens last 15 minutes. Refresh tokens are random, stored only as SHA-256 hashes, and replaced on every use. If a replaced token shows up again later, someone may have copied it, so all of that user's sessions end. Every token carries the user's token version: changing or resetting the password, "log out of all devices" and deactivation raise it, which ends all existing sessions at once without a token blocklist.
 - **Google sign-in without a Google library.** The app sends the ID token Google gave it, and `GoogleIdTokenVerifier` checks it with JJWT against Google's published keys (cached, fetched again when Google changes them): signature, issuer, audience (our client ID) and expiry. Accounts are tied to Google's permanent `sub` ID, not the email. A first sign-in links an existing member only when Google owns the address (Gmail, or a Google Workspace domain); otherwise the member logs in with the password. If someone had signed up with that address but never verified it, their password is removed. Trainers and admins keep their password logins, and two-factor authentication still applies after Google.
 - **Two-factor login in two steps.** A correct password for a two-factor account returns a challenge token instead of a session: a 10-minute JWT that only the code step accepts. The codes are computed in `Totp` (HMAC-SHA1 over 30-second steps, no library) and each code works once. Wrong codes count toward the same lock as wrong passwords, and entering the password again doesn't reset the count, so codes can't be guessed. Recovery codes are stored as SHA-256 hashes. An admin can't get a session without it, and admin sessions from before it was required are ended. The app's secret is stored as it is, because the server needs it to check codes; a production setup would encrypt it with a key from a secrets manager.
-- **Secrets stay out of the repo.** Configuration comes from a git-ignored `local.properties` or `.env`. A pre-commit hook blocks key-like strings, and the app refuses to start with live Stripe keys.
+- **Secrets stay out of the repo.** Configuration comes from a git-ignored `local.properties` or `.env`. A pre-commit hook blocks key-like strings, CI scans every push with gitleaks, and the app refuses to start with live Stripe keys.
+- **Nobody can hold on to someone else's email.** A sign-up that was never verified is replaced by a newer one for the same email, and deleted after 48 hours. Verifying needs the code from the inbox *and* the password chosen at sign-up, so whoever proves the inbox is also whoever chose the password. Signing up with an email that already has an account gets the usual answer, and the owner is told by email, so the reply doesn't reveal who is a member.
+- **Lockouts can't be used against the owner.** Wrong passwords and two-factor codes lock the account only for the network address they came from (5 within 15 minutes), so an attacker can't lock someone out from elsewhere. 30 wrong attempts in a row from any addresses lock it everywhere, against guessing spread over many addresses. A login for an unknown email still checks a dummy password hash, so the time taken doesn't reveal accounts.
+- **Anything that costs money or reputation is capped.** Emails anyone can trigger without logging in (sign-up, new code, password reset) are limited to 5 per address a day and 100 an hour for the whole gym, so a bot can't use up the Gmail account's sending limit. SMS codes only go to Jordanian numbers, one a minute even after changing the number, 5 a day per account and 200 a day for the whole gym. Names are letters only, so emails can't carry links someone typed in.
+- **A copy of the database isn't enough.** Emailed codes are stored as SHA-256 hashes, and two-factor secrets are encrypted with AES-256-GCM using `app.security.encryption-key`, which never touches the database. Older rows are upgraded at startup.
+- **Safe by default, strict in production.** The server only accepts connections from the same computer unless Docker or `server.address` says otherwise, the 22 demo trainers exist only with `app.seed.demo-trainers=true`, and no admin is created without a configured password. With `app.production=true` it refuses to start if emails or SMS codes would only be written to the log, or if the demo trainers are on.
 
 ## Tech stack
 
@@ -136,7 +141,7 @@ cp .env.example .env    # fill in the values
 docker compose up --build
 ```
 
-The API runs on <http://localhost:8080>. `GET /api/health` returns `{"status":"UP", ...}`.
+The API runs on <http://localhost:8080>, reachable from this machine only. `GET /api/health` returns `{"status":"UP", ...}`. On a real server, set `PRODUCTION=true` and put an HTTPS proxy such as Caddy or nginx in front; the app reads the client's address from its `X-Forwarded-For` header.
 
 ### Local (Maven)
 
@@ -145,17 +150,17 @@ Requires JDK 21+ and MySQL 8.4.
 ```bash
 cp local.properties.example local.properties
 bash scripts/create-db-user.sh    # creates the MySQL user "gymapp" and stores its password in local.properties
-# add a JWT secret to local.properties: openssl rand -base64 64 | tr -d '\n'
-# optional: set app.admin.initial-password in local.properties (otherwise a random one is printed once)
+# in local.properties: a JWT secret (openssl rand -base64 64 | tr -d '\n'), an encryption key
+# (openssl rand -base64 32), the admin's password, and app.seed.demo-trainers=true for the demo trainers
 # optional: send real emails through Gmail (see "Real emails with Gmail" below)
 mvn spring-boot:run
 ```
 
-The `gymdb` schema and its tables are created on first start. The `gymapp` user can only access `gymdb` and cannot drop tables.
+The `gymdb` schema and its tables are created on first start. The `gymapp` user can only access `gymdb` and cannot drop tables. The server listens on `127.0.0.1` only; the Android emulator reaches it at `10.0.2.2`, and a phone on USB with `adb reverse tcp:8080 tcp:8080`.
 
 ### Demo data
 
-On startup the app seeds any missing branches, trainers and the admin account (`admin@gym.com`). The admin password comes from `app.admin.initial-password` in `local.properties` (`ADMIN_PASSWORD` in `.env`). If it isn't set, a random password is generated and printed once in the log. Change it in the app under Profile > Change password. At the admin's first login, the app asks them to set up an authenticator app such as Google Authenticator or the iPhone's Passwords app. If the phone and the recovery codes are both lost, setting `two_factor_secret` to `NULL` for `admin@gym.com` in MySQL starts the setup again at the next login. The trainer accounts are demo data for local development only.
+On startup the app adds any missing branches and the admin account (`admin@gym.com`). The admin password comes from `app.admin.initial-password` in `local.properties` (`ADMIN_PASSWORD` in `.env`); while it isn't set, no admin is created. Change it in the app under Profile > Change password. At the admin's first login, the app asks them to set up an authenticator app such as Google Authenticator or the iPhone's Passwords app. If the phone and the recovery codes are both lost, setting `two_factor_secret` to `NULL` for `admin@gym.com` in MySQL starts the setup again at the next login. The 22 demo trainers below are only added with `app.seed.demo-trainers=true` (`SEED_DEMO_TRAINERS=true` for Docker), for local development: their password is public, so production mode refuses to start with them.
 
 | Role | Email | Password |
 |---|---|---|
@@ -171,7 +176,11 @@ Settings are in `src/main/resources/application.properties`. Secrets go in `loca
 |---|---|---|
 | `spring.datasource.password` | `DB_PASSWORD` | Set by `create-db-user.sh` |
 | `app.jwt.secret` | `JWT_SECRET` | Required. Base64, 64+ bytes |
-| `app.admin.initial-password` | `ADMIN_PASSWORD` | First admin's password; random and logged once if empty |
+| `app.security.encryption-key` | `ENCRYPTION_KEY` | Required. 32 random bytes in Base64 (`openssl rand -base64 32`); encrypts two-factor secrets. Keep it: with another key, two-factor logins stop working |
+| `app.admin.initial-password` | `ADMIN_PASSWORD` | First admin's password; no admin is created while it's empty |
+| `app.seed.demo-trainers` | `SEED_DEMO_TRAINERS` | `true` adds the 22 demo trainers. Local development only |
+| `app.production` | `PRODUCTION` | `true` on a real server: refuses to start with emails or SMS codes going to the log, or with the demo trainers |
+| `server.address` | | `127.0.0.1` (only this computer). Docker sets `0.0.0.0` inside the container and publishes the port on `127.0.0.1` |
 | `app.auth.google.client-id` | `GOOGLE_CLIENT_ID` | Optional. Google's "Web application" client ID; empty turns Google sign-in off |
 | `app.payments.stripe.secret-key` | `STRIPE_SECRET_KEY` | `sk_test_...` only |
 | `app.payments.stripe.publishable-key` | `STRIPE_PUBLISHABLE_KEY` | `pk_test_...`, passed to the app |
@@ -228,7 +237,7 @@ By default, the SMS codes for phone numbers are written to the log. To text them
    app.sms.twilio.verify-service-sid=VA...
    ```
 
-Twilio charges for each verification; see the [Verify page](https://www.twilio.com/en-us/user-authentication-identity/verify) for prices.
+Twilio charges for each verification; see the [Verify page](https://www.twilio.com/en-us/user-authentication-identity/verify) for prices. The app only texts the countries in `app.sms.allowed-countries` (Jordan) and at most `app.sms.max-per-day` codes a day. Limit Twilio too, in case a key leaks: under **Verify > Settings > Geo permissions**, allow only Jordan, and keep **Fraud Guard** on.
 
 ### Stripe test mode
 
@@ -256,8 +265,8 @@ All endpoints except `/api/health`, `/api/auth/**` and the Stripe webhook requir
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| POST | `/api/auth/signup` | `fullName, email, phone, password` | `201`, verification code sent by email |
-| POST | `/api/auth/verify` | `email, code` | `200 {token, refreshToken, user}` |
+| POST | `/api/auth/signup` | `fullName, email, phone, password` | `201`, verification code sent by email. The same answer if the email has an account (its owner is emailed instead); a newer sign-up replaces one that was never verified |
+| POST | `/api/auth/verify` | `email, code, password` | `200 {token, refreshToken, user}`. The password must be the one chosen at sign-up (`400 SIGN_UP_REPLACED` otherwise) |
 | POST | `/api/auth/resend-code` | `email` | `200` |
 | POST | `/api/auth/google` | `idToken` | Members only. Same answers as login. A first sign-in links the member with the same email if Google owns it, or creates a member (no phone or password yet) |
 | POST | `/api/auth/login` | `email, password` | `200 {token, refreshToken, user}`, or for two-factor accounts `200 {twoFactor, challengeToken}` with `twoFactor` = `CODE_REQUIRED` or `SETUP_REQUIRED` (an admin without an authenticator app yet) |
@@ -368,9 +377,11 @@ Errors share one format:
 |---|---|---|
 | `/api/auth/**` per IP | 10 / min | `429 RATE_LIMITED` |
 | Other endpoints per IP | 100 / min | `429 RATE_LIMITED` |
-| Verification code resend | 1 / 60 s | `429 RESEND_TOO_SOON` |
-| SMS codes | 1 / 60 s per number, 5 a day per account | `429 RESEND_TOO_SOON`, `429 TOO_MANY_CODES` |
-| Wrong passwords or two-factor codes | 5 in a row, then 15 min lock | `429 ACCOUNT_LOCKED` |
+| Emailed codes (sign-up, new code, password reset) | 1 / 60 s and 5 a day per address | `429 RESEND_TOO_SOON`, `429 TOO_MANY_CODES` (password reset answers `200` either way) |
+| Emails anyone can trigger without logging in | 100 / hour for the whole gym | `429 EMAIL_BUSY` |
+| SMS codes | Jordanian numbers only; 1 / 60 s and 5 a day per account; 200 a day for the whole gym | `400 SMS_COUNTRY_NOT_SUPPORTED`, `429 RESEND_TOO_SOON`, `429 TOO_MANY_CODES`, `429 SMS_LIMIT_REACHED` |
+| Wrong passwords or two-factor codes | 5 within 15 min from one address locks it for that address for 15 min; 30 in a row from any addresses lock it everywhere | `429 ACCOUNT_LOCKED` |
+| Sign-ups never verified | Deleted after 48 hours | |
 | Wrong verification or SMS codes | 5 per code | `400 TOO_MANY_ATTEMPTS` |
 
 `429` responses include `Retry-After`. All limits are configurable in `application.properties`.
@@ -398,7 +409,7 @@ src/main/java/com/mycompany/gymbooking
 mvn verify
 ```
 
-124 tests. They need no MySQL, network, Stripe, Google, mail or Twilio account.
+139 tests. They need no MySQL, network, Stripe, Google, mail or Twilio account.
 
 | Test | Covers |
 |---|---|
@@ -410,6 +421,9 @@ mvn verify
 | `StripeWebhookVerifierTest` | Signature and timestamp checks |
 | `StripePaymentGatewayTest` | Requests sent to Stripe, idempotency, error handling |
 | `InMemoryRateLimiterTest` | Token bucket refill and `Retry-After` |
+| `LoginGuardTest` | Lockout per network address, the account-wide backstop, counts that expire or reset |
+| `SecretBoxTest` | AES-GCM encryption of stored secrets, older plain values, a wrong key or changed data, a missing key |
+| `ProductionChecksTest` | Production mode refusing codes in the log and the demo trainers |
 | `GoogleIdTokenVerifierTest` | Google ID tokens: signature, audience, issuer, expiry, key rotation, Google being unreachable |
 | `TotpTest` | Authenticator codes against the RFC 6238 test values, Base32, clock drift, the QR code link |
 | `PhoneNumbersTest` | Jordanian numbers typed in different ways, numbers that can't exist, landlines, other countries |
@@ -426,8 +440,9 @@ mvn verify
 | `AdminTrainerApiTest` | End-to-end: admin-only access, invite flow, validation, editing, schedules, deactivation with refunds, branches in use |
 | `AdminBookingApiTest` | End-to-end: admin bookings list and filters, gym cancellations with refunds, trainer and branch blocks, validation |
 | `ReviewApiTest` | End-to-end: rating only after the session, once, within 30 days, averages on profiles and lists, trainer replies, hiding with an email to the member, showing again |
+| `AccountSecurityApiTest` | End-to-end: sign-ups for someone else's email, existing accounts not revealed, unverified sign-ups expiring, the daily limit on emailed codes, hashed codes, letters-only names |
 
-CI runs the test suite and a Docker Compose smoke test on every push and pull request.
+CI runs a gitleaks secret scan, the test suite and a Docker Compose smoke test on every push and pull request, with actions pinned to commits and a read-only token.
 
 ## Roadmap
 

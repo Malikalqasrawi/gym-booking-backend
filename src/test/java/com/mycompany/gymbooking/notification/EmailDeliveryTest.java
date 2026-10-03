@@ -59,6 +59,7 @@ class EmailDeliveryTest {
                 "--spring.datasource.password=",
                 "--app.jwt.secret=" + Base64.getEncoder().encodeToString(jwtSecret),
                 "--app.admin.initial-password=AdminTest123",
+                "--app.security.encryption-key=" + Base64.getEncoder().encodeToString(new byte[32]),
                 "--app.notifications.mode=email",
                 "--spring.mail.host=127.0.0.1",
                 "--spring.mail.port=" + smtp.port(),

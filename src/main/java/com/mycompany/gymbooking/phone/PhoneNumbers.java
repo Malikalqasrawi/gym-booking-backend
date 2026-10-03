@@ -44,6 +44,18 @@ public final class PhoneNumbers {
         }
     }
 
+    /** The country of a valid number as an ISO code, e.g. "JO" for +962..., or empty. */
+    public static Optional<String> country(String input) {
+        if (input == null || input.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(UTIL.getRegionCodeForNumber(UTIL.parse(input.trim(), DEFAULT_REGION)));
+        } catch (NumberParseException e) {
+            return Optional.empty();
+        }
+    }
+
     /** For input that {@link ValidPhone} has already checked. */
     public static String toInternational(String input) {
         return international(input, false)

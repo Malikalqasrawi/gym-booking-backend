@@ -13,7 +13,11 @@ import jakarta.persistence.InheritanceType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
+import com.mycompany.gymbooking.security.Sha256;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.HashSet;
@@ -57,7 +61,8 @@ public abstract class User {
     @Column(nullable = false)
     private boolean verified = false;
 
-    @Column(length = 6)
+    /** SHA-256 of the latest emailed code, so a copy of the database doesn't reveal working codes. */
+    @Column(length = 64)
     private String verificationCode;
 
     private LocalDateTime verificationCodeExpiresAt;
@@ -68,6 +73,11 @@ public abstract class User {
 
     /** Used to enforce the resend cooldown. */
     private LocalDateTime verificationCodeSentAt;
+
+    /** Codes emailed on {@link #emailCodesDay}, to cap how often anyone can make us email this address. */
+    private Integer emailCodesThatDay;
+
+    private LocalDate emailCodesDay;
 
     /** Consecutive failed logins; reset on success or when a lock starts. */
     @Column(nullable = false)
@@ -82,12 +92,15 @@ public abstract class User {
     @Column(name = "token_version", nullable = false, columnDefinition = "int default 0 not null")
     private int tokenVersion = 0;
 
-    /** Secret shared with the user's authenticator app (Base32); null while two-factor login is off. */
-    @Column(length = 32)
+    /**
+     * Secret shared with the user's authenticator app (Base32), encrypted by SecretBox; null while
+     * two-factor login is off.
+     */
+    @Column(length = 128)
     private String twoFactorSecret;
 
-    /** A new secret during setup. It replaces twoFactorSecret once a code from it is confirmed. */
-    @Column(length = 32)
+    /** A new secret during setup, also encrypted. It replaces twoFactorSecret once a code from it is confirmed. */
+    @Column(length = 128)
     private String pendingTwoFactorSecret;
 
     /** The 30-second step of the last accepted code, so each code works only once. */
@@ -129,10 +142,24 @@ public abstract class User {
 
     /** Replaces the current code and resets the attempt counter. */
     public void issueVerificationCode(String code, LocalDateTime sentAt, LocalDateTime expiresAt) {
-        this.verificationCode = code;
+        this.verificationCode = Sha256.hex(code);
         this.verificationCodeSentAt = sentAt;
         this.verificationCodeExpiresAt = expiresAt;
         this.verificationAttempts = 0;
+    }
+
+    /** Whether this address already got its maximum of emailed codes today. */
+    public boolean emailCodeLimitReached(LocalDate today, int maxPerDay) {
+        return today.equals(emailCodesDay) && emailCodesThatDay != null && emailCodesThatDay >= maxPerDay;
+    }
+
+    /** Counts an email with a code (or about the account) sent to this address today. */
+    public void countEmailCode(LocalDate today) {
+        if (!today.equals(emailCodesDay) || emailCodesThatDay == null) {
+            emailCodesDay = today;
+            emailCodesThatDay = 0;
+        }
+        emailCodesThatDay++;
     }
 
     /** Seconds until another code may be sent, rounded up; 0 if allowed now. */
@@ -167,7 +194,8 @@ public abstract class User {
     }
 
     public boolean verificationCodeMatches(String code) {
-        return verificationCode != null && verificationCode.equals(code);
+        return verificationCode != null && code != null && MessageDigest.isEqual(
+                verificationCode.getBytes(StandardCharsets.US_ASCII), Sha256.hex(code).getBytes(StandardCharsets.US_ASCII));
     }
 
     public void markVerified() {

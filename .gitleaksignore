@@ -1,0 +1,3 @@
+# Not secrets: the public RFC 6238 test key in TotpTest, and an example token in an old README.
+1b7b007dc07201fa7381b22fa97920afe2576bba:src/test/java/com/mycompany/gymbooking/security/TotpTest.java:generic-api-key:18
+32393bc89ac4bf579d2003f230e13a428b52ae74:README.md:curl-auth-header:293

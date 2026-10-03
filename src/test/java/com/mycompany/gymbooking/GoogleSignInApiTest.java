@@ -122,7 +122,7 @@ class GoogleSignInApiTest extends ApiTestBase {
                 "fullName", "Test Member", "email", email, "phone", "0790000000", "password", "Secret1234"));
         assertEquals(201, signUp.status(), signUp.body().toString());
         Reply verified = call("POST", "/api/auth/verify", null,
-                Map.of("email", email, "code", mailbox.latestVerificationCode(email)));
+                Map.of("email", email, "code", mailbox.latestVerificationCode(email), "password", "Secret1234"));
         assertEquals(200, verified.status(), verified.body().toString());
         return verified.body().path("user").path("id").asLong();
     }

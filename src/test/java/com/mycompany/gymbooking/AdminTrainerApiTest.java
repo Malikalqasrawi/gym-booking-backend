@@ -62,7 +62,7 @@ class AdminTrainerApiTest extends ApiTestBase {
 
         String code = mailbox.latestInviteCode(email);
         assertEquals("INVALID_CODE", call("POST", "/api/auth/verify", null,
-                Map.of("email", email, "code", code)).code(), "the invite can't be used without setting a password");
+                Map.of("email", email, "code", code, "password", "Secret1234")).code(), "the invite can't be used without setting a password");
 
         Reply wrong = call("POST", "/api/auth/accept-invite", null,
                 Map.of("email", email, "code", code.equals("000000") ? "111111" : "000000", "password", "Boxing2026"));

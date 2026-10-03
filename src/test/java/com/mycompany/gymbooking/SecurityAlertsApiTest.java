@@ -64,7 +64,7 @@ class SecurityAlertsApiTest extends ApiTestBase {
         assertEquals(201, call("POST", "/api/auth/signup", null, Map.of(
                 "fullName", "Test Member", "email", existing, "phone", "0790000000", "password", "Secret1234")).status());
         assertEquals(200, call("POST", "/api/auth/verify", null,
-                Map.of("email", existing, "code", mailbox.latestVerificationCode(existing))).status());
+                Map.of("email", existing, "code", mailbox.latestVerificationCode(existing), "password", "Secret1234")).status());
 
         assertEquals(200, googleLogin(existing).status());
         assertEquals(200, googleLogin(existing).status());
